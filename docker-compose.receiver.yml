@@ -1,17 +1,4 @@
 services:
-  minio:
-    image: minio/minio:RELEASE.2025-04-08T15-41-24Z
-    command: ["server", "/data", "--console-address", ":9001"]
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
-    ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
-    volumes:
-      - minio-data:/data
-    restart: unless-stopped
-
   download-cleaner:
     image: alpine:3.21
     command: ["/bin/sh", "/usr/local/bin/download-cleaner.sh"]
@@ -52,7 +39,6 @@ services:
       dockerfile: Dockerfile
     command: ["python", "/app/receiver.py"]
     depends_on:
-      - minio
       - download-cleaner
       - download-proxy
     environment:
@@ -60,14 +46,6 @@ services:
       ARCHIVE_PASSWORD: ${ARCHIVE_PASSWORD:?ARCHIVE_PASSWORD is required}
       CHANNEL_CHAT_ID: ${CHANNEL_UPDATES_CHAT_ID:?CHANNEL_UPDATES_CHAT_ID is required}
       WORK_ROOT: /data/work
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_PUBLIC_BASE_URL: ${MINIO_PUBLIC_BASE_URL:-http://minio:9000}
-      MINIO_BUCKET: ${MINIO_BUCKET:-downloads}
-      MINIO_REGION: ${MINIO_REGION:-us-east-1}
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
-      MINIO_RETENTION_HOURS: ${MINIO_RETENTION_HOURS:-1}
-      MINIO_RETRY_INTERVAL_SECONDS: ${MINIO_RETRY_INTERVAL_SECONDS:-300}
       MISSING_PART_RETRIES: ${MISSING_PART_RETRIES:-5}
       PUBLIC_DOWNLOAD_ROOT: /srv/downloads
       PUBLIC_DOWNLOAD_BASE_URL: ${PUBLIC_DOWNLOAD_BASE_URL:?PUBLIC_DOWNLOAD_BASE_URL is required}
@@ -84,6 +62,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  minio-data:
   receiver-data:
   downloads-data:

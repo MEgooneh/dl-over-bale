@@ -5,8 +5,6 @@ import base64
 import hmac
 import json
 import logging
-import math
-import mimetypes
 import os
 import re
 import shutil
@@ -17,10 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import quote
 
-import boto3
-import botocore.exceptions
 import httpx
-from botocore.client import Config
 import hashlib
 import queue
 
@@ -42,19 +37,11 @@ IDLE_SLEEP = float(os.environ.get("IDLE_SLEEP", "2"))
 PUBLIC_DOWNLOAD_RETENTION_SECONDS = max(60, int(os.environ.get("PUBLIC_DOWNLOAD_RETENTION_SECONDS", "3600")))
 PUBLIC_DOWNLOAD_CLEAN_INTERVAL_SECONDS = max(60, int(os.environ.get("PUBLIC_DOWNLOAD_CLEAN_INTERVAL_SECONDS", "300")))
 
-MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "http://minio:9000")
-MINIO_PUBLIC_BASE_URL = os.environ.get("MINIO_PUBLIC_BASE_URL", MINIO_ENDPOINT).rstrip("/")
-MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "downloads")
-MINIO_REGION = os.environ.get("MINIO_REGION", "us-east-1")
-MINIO_ACCESS_KEY = os.environ["MINIO_ACCESS_KEY"]
-MINIO_SECRET_KEY = os.environ["MINIO_SECRET_KEY"]
 PUBLIC_DOWNLOAD_ROOT = Path(os.environ.get("PUBLIC_DOWNLOAD_ROOT", "/srv/downloads")).resolve()
 PUBLIC_DOWNLOAD_BASE_URL = os.environ.get("PUBLIC_DOWNLOAD_BASE_URL", "http://localhost:8080").rstrip("/")
 DOWNLOAD_LINK_SECRET = os.environ.get("DOWNLOAD_LINK_SECRET", "").strip()
 DOWNLOAD_LINK_TTL_SECONDS = max(60, int(os.environ.get("DOWNLOAD_LINK_TTL_SECONDS", "10800")))
 URL_RESPONSE_PASSWORD = os.environ.get("URL_RESPONSE_PASSWORD", "").strip()
-MINIO_RETENTION_HOURS = max(1, int(os.environ.get("MINIO_RETENTION_HOURS", "24")))
-MINIO_RETRY_INTERVAL_SECONDS = max(60, int(os.environ.get("MINIO_RETRY_INTERVAL_SECONDS", "300")))
 WORKER_COUNT = max(1, int(os.environ.get("WORKER_COUNT", "8")))
 MAX_QUEUE_SIZE = max(1, int(os.environ.get("MAX_QUEUE_SIZE", "1000")))
 
@@ -69,7 +56,6 @@ state_lock = threading.Lock()
 job_queue: queue.Queue[str] = queue.Queue(maxsize=MAX_QUEUE_SIZE)
 workers_started = False
 MISSING_PART_RETRIES = max(1, int(os.environ.get("MISSING_PART_RETRIES", "5")))
-capacity_retry_started = False
 download_cleanup_started = False
 
 
@@ -213,64 +199,6 @@ def download_document(client: httpx.Client, document: dict[str, Any], destinatio
         raise
 
 
-def minio_client() -> Any:
-    return boto3.client(
-        "s3",
-        endpoint_url=MINIO_ENDPOINT,
-        aws_access_key_id=MINIO_ACCESS_KEY,
-        aws_secret_access_key=MINIO_SECRET_KEY,
-        region_name=MINIO_REGION,
-        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
-    )
-
-
-def ensure_bucket_public(s3: Any) -> None:
-    try:
-        s3.head_bucket(Bucket=MINIO_BUCKET)
-    except botocore.exceptions.ClientError as exc:
-        status_code = int(exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode") or 0)
-        if status_code not in {404, 400}:
-            raise
-        s3.create_bucket(Bucket=MINIO_BUCKET)
-
-    policy = {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Sid": "PublicReadGetObject",
-                "Effect": "Allow",
-                "Principal": "*",
-                "Action": ["s3:GetObject"],
-                "Resource": [f"arn:aws:s3:::{MINIO_BUCKET}/*"],
-            }
-        ],
-    }
-    s3.put_bucket_policy(Bucket=MINIO_BUCKET, Policy=json.dumps(policy, separators=(",", ":")))
-    ensure_bucket_lifecycle(s3)
-
-
-def ensure_bucket_lifecycle(s3: Any) -> None:
-    expire_days = max(1, math.ceil(MINIO_RETENTION_HOURS / 24))
-    s3.put_bucket_lifecycle_configuration(
-        Bucket=MINIO_BUCKET,
-        LifecycleConfiguration={
-            "Rules": [
-                {
-                    "ID": "dl-over-bale-expire-all-objects",
-                    "Status": "Enabled",
-                    "Filter": {"Prefix": ""},
-                    "Expiration": {"Days": expire_days},
-                    "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": expire_days},
-                }
-            ]
-        },
-    )
-
-
-def public_object_url(object_key: str) -> str:
-    return f"{MINIO_PUBLIC_BASE_URL}/{MINIO_BUCKET}/{quote(object_key, safe='/')}"
-
-
 def storage_relative_path(object_key: str, fallback_file_name: str) -> Path:
     raw_path = str(object_key or "").strip().strip("/")
     candidate = PurePosixPath(raw_path) if raw_path else PurePosixPath(Path(fallback_file_name).name)
@@ -390,16 +318,6 @@ def public_download_cleanup_worker() -> None:
         except Exception:
             log.exception("Public download cleanup failed")
         time.sleep(PUBLIC_DOWNLOAD_CLEAN_INTERVAL_SECONDS)
-
-
-def is_minio_capacity_error(exc: Exception) -> bool:
-    if not isinstance(exc, botocore.exceptions.ClientError):
-        return False
-    error = exc.response.get("Error") or {}
-    code = str(error.get("Code") or "").strip()
-    message = str(error.get("Message") or "").lower()
-    status_code = int(exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode") or 0)
-    return code in {"XMinioStorageFull", "InsufficientStorage"} or status_code == 507 or "minimum free drive threshold" in message
 
 
 def first_archive_part(job: dict[str, Any], job_dir: Path) -> Path:
@@ -566,100 +484,6 @@ def assemble_chunked_payload(job_dir: Path, job: dict[str, Any]) -> tuple[dict[s
     return metadata, assembled_path
 
 
-def upload_chunked_payload_to_minio(job_dir: Path, job: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    request_id = str(job.get("request_id") or "").strip()
-    payload_file_name = str(job.get("payload_file_name") or "").strip()
-    object_key = str(job.get("object_key") or "").strip()
-    if not payload_file_name:
-        raise RuntimeError("Chunked job metadata missing payload_file_name")
-    if not object_key:
-        raise RuntimeError("Chunked job metadata missing object_key")
-
-    extract_root = job_dir / "chunk_extract"
-    shutil.rmtree(extract_root, ignore_errors=True)
-    extract_root.mkdir(parents=True, exist_ok=True)
-
-    parts = job.get("parts") or {}
-    total = int(job.get("total") or 0)
-    expected_size = int(job.get("payload_size") or 0)
-    expected_sha256 = str(job.get("payload_sha256") or "").strip().lower()
-    overall_digest = hashlib.sha256()
-    current_offset = 0
-
-    s3 = minio_client()
-    ensure_bucket_public(s3)
-    create_args: dict[str, Any] = {"Bucket": MINIO_BUCKET, "Key": object_key}
-    content_type = mimetypes.guess_type(payload_file_name)[0]
-    if content_type:
-        create_args["ContentType"] = content_type
-    multipart = s3.create_multipart_upload(**create_args)
-    upload_id = str(multipart["UploadId"])
-    uploaded_parts: list[dict[str, Any]] = []
-
-    try:
-        for index in range(1, total + 1):
-            volume_name = str(parts.get(str(index)) or "").strip()
-            if not volume_name:
-                raise RuntimeError(f"Missing chunk archive entry for {index}")
-            archive_path = job_dir / "parts" / volume_name
-            chunk_dir = extract_root / f"{index:06d}"
-            chunk_metadata, payload_path = extract_chunk_archive(archive_path, chunk_dir)
-            if str(chunk_metadata.get("protocol") or "") != "dl-over-bale-v3-chunk":
-                raise RuntimeError(f"Unexpected chunk protocol for {volume_name}")
-            if request_id and str(chunk_metadata.get("request_id") or "").strip() != request_id:
-                raise RuntimeError(f"Chunk request_id mismatch for {volume_name}")
-            if int(chunk_metadata.get("chunk_index") or 0) != index:
-                raise RuntimeError(f"Chunk index mismatch for {volume_name}")
-            if int(chunk_metadata.get("chunk_offset") or 0) != current_offset:
-                raise RuntimeError(f"Chunk offset mismatch for {volume_name}")
-
-            payload_bytes = payload_path.read_bytes()
-            chunk_size = int(chunk_metadata.get("chunk_size") or 0)
-            if chunk_size and len(payload_bytes) != chunk_size:
-                raise RuntimeError(f"Chunk size mismatch for {volume_name}")
-            overall_digest.update(payload_bytes)
-            response = s3.upload_part(
-                Bucket=MINIO_BUCKET,
-                Key=object_key,
-                UploadId=upload_id,
-                PartNumber=index,
-                Body=payload_bytes,
-            )
-            uploaded_parts.append({"ETag": str(response["ETag"]), "PartNumber": index})
-            current_offset += len(payload_bytes)
-            shutil.rmtree(chunk_dir, ignore_errors=True)
-
-        if expected_size and current_offset != expected_size:
-            raise RuntimeError("Assembled payload size does not match upload metadata")
-        final_sha256 = overall_digest.hexdigest().lower()
-        if expected_sha256 and final_sha256 != expected_sha256:
-            raise RuntimeError("Assembled payload checksum does not match upload metadata")
-
-        s3.complete_multipart_upload(
-            Bucket=MINIO_BUCKET,
-            Key=object_key,
-            UploadId=upload_id,
-            MultipartUpload={"Parts": uploaded_parts},
-        )
-        metadata = {
-            "protocol": "dl-over-bale-v3-chunk",
-            "request_id": request_id,
-            "payload_file_name": payload_file_name,
-            "payload_size": current_offset,
-            "payload_sha256": final_sha256,
-            "object_key": object_key,
-        }
-        return metadata, public_object_url(object_key)
-    except Exception:
-        try:
-            s3.abort_multipart_upload(Bucket=MINIO_BUCKET, Key=object_key, UploadId=upload_id)
-        except Exception:
-            log.exception("Failed aborting multipart upload for %s", request_id or object_key)
-        raise
-    finally:
-        shutil.rmtree(extract_root, ignore_errors=True)
-
-
 def write_chunked_payload_to_disk(job_dir: Path, job: dict[str, Any]) -> tuple[dict[str, Any], Path]:
     request_id = str(job.get("request_id") or "").strip()
     payload_file_name = str(job.get("payload_file_name") or "").strip()
@@ -746,21 +570,21 @@ def write_chunked_payload_to_disk(job_dir: Path, job: dict[str, Any]) -> tuple[d
         shutil.rmtree(extract_root, ignore_errors=True)
 
 
-def upload_payload_to_minio(metadata: dict[str, Any], payload_path: Path) -> str:
-    object_key = str(metadata.get("object_key") or "").strip()
-    if not object_key:
-        raise RuntimeError("metadata.json missing object_key")
-    s3 = minio_client()
-    ensure_bucket_public(s3)
-    extra_args: dict[str, Any] = {}
-    content_type = mimetypes.guess_type(payload_path.name)[0]
-    if content_type:
-        extra_args["ContentType"] = content_type
-    if extra_args:
-        s3.upload_file(str(payload_path), MINIO_BUCKET, object_key, ExtraArgs=extra_args)
-    else:
-        s3.upload_file(str(payload_path), MINIO_BUCKET, object_key)
-    return public_object_url(object_key)
+def write_payload_to_disk(metadata: dict[str, Any], payload_path: Path) -> tuple[dict[str, Any], Path]:
+    payload_file_name = str(metadata.get("payload_file_name") or payload_path.name).strip() or payload_path.name
+    relative_path, final_path = storage_final_path(str(metadata.get("object_key") or ""), payload_file_name)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = final_path.parent / f".{final_path.name}.partial"
+    temp_path.unlink(missing_ok=True)
+    try:
+        shutil.copyfile(payload_path, temp_path)
+        final_path.unlink(missing_ok=True)
+        temp_path.replace(final_path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+    metadata["storage_relative_path"] = relative_path.as_posix()
+    return metadata, final_path
 
 
 def process_completed_job(request_id: str, state: dict[str, Any]) -> None:
@@ -773,16 +597,16 @@ def process_completed_job(request_id: str, state: dict[str, Any]) -> None:
     try:
         if str(job.get("mode") or "legacy") == "chunked":
             metadata, final_path = write_chunked_payload_to_disk(job_dir, job)
-            relative_path = storage_relative_path(
-                str(metadata.get("storage_relative_path") or metadata.get("object_key") or ""),
-                str(metadata.get("payload_file_name") or final_path.name),
-            )
-            location = public_disk_url(relative_path)
         else:
             metadata, payload_path = extract_archive(job_dir, job)
-            location = upload_payload_to_minio(metadata, payload_path)
+            metadata, final_path = write_payload_to_disk(metadata, payload_path)
+        relative_path = storage_relative_path(
+            str(metadata.get("storage_relative_path") or metadata.get("object_key") or ""),
+            str(metadata.get("payload_file_name") or final_path.name),
+        )
+        location = public_disk_url(relative_path)
         with httpx.Client() as client:
-            backend = "disk" if str(job.get("mode") or "legacy") == "chunked" else "minio"
+            backend = "disk"
             send_channel_control(
                 client,
                 CONTROL_DONE_PREFIX,
@@ -801,16 +625,6 @@ def process_completed_job(request_id: str, state: dict[str, Any]) -> None:
         log.info("Completed request %s -> %s", request_id, location)
     except Exception as exc:
         error_text = str(exc).strip() or exc.__class__.__name__
-        if is_minio_capacity_error(exc):
-            log.warning("MinIO capacity reached while processing %s; keeping job queued for retry", request_id)
-            with state_lock:
-                job = (state.get("jobs") or {}).get(request_id)
-                if job:
-                    job["status"] = "waiting_for_minio_capacity"
-                    job["updated_at"] = int(time.time())
-                    job["last_error"] = error_text
-                    save_state(state)
-            return
         log.exception("Failed processing request %s", request_id)
         with httpx.Client() as client:
             send_channel_control(client, CONTROL_FAIL_PREFIX, {"request_id": request_id, "error": error_text})
@@ -1054,50 +868,6 @@ def start_public_download_cleanup_worker() -> None:
     thread.start()
 
 
-def retry_minio_capacity_jobs(state: dict[str, Any]) -> None:
-    pending_ids: list[str] = []
-    with state_lock:
-        for request_id, job in (state.get("jobs") or {}).items():
-            if job.get("status") != "waiting_for_minio_capacity":
-                continue
-            job["status"] = "processing"
-            job["updated_at"] = int(time.time())
-            save_state(state)
-            pending_ids.append(request_id)
-    for request_id in pending_ids:
-        try:
-            job_queue.put_nowait(request_id)
-            log.info("Requeued %s after previous MinIO capacity failure", request_id)
-        except queue.Full:
-            with state_lock:
-                job = (state.get("jobs") or {}).get(request_id)
-                if job:
-                    job["status"] = "waiting_for_minio_capacity"
-                    job["updated_at"] = int(time.time())
-                    save_state(state)
-            break
-
-
-def minio_capacity_retry_worker(state: dict[str, Any]) -> None:
-    while True:
-        retry_minio_capacity_jobs(state)
-        time.sleep(MINIO_RETRY_INTERVAL_SECONDS)
-
-
-def start_minio_capacity_retry_worker(state: dict[str, Any]) -> None:
-    global capacity_retry_started
-    if capacity_retry_started:
-        return
-    capacity_retry_started = True
-    thread = threading.Thread(
-        target=minio_capacity_retry_worker,
-        args=(state,),
-        name="receiver-minio-capacity-retry",
-        daemon=True,
-    )
-    thread.start()
-
-
 def requeue_processing_jobs(state: dict[str, Any]) -> None:
     with state_lock:
         jobs = dict(state.get("jobs") or {})
@@ -1114,7 +884,6 @@ def poll_forever() -> None:
     state = load_state()
     start_workers(state)
     start_public_download_cleanup_worker()
-    start_minio_capacity_retry_worker(state)
     requeue_processing_jobs(state)
 
     with httpx.Client() as client:
