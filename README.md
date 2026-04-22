@@ -1,24 +1,24 @@
 # DL Over Bale
 
-`DL Over Bale` transfers files through Bale by splitting uploads on the sender side and rebuilding them on the receiver side. It supports direct file URLs and generic `yt-dlp` downloads without hardcoded site rules.
+Move files through Bale. The sender downloads and uploads chunks. The receiver rebuilds files and serves short-lived protected links.
 
-## What It Includes
+## Deploy It Like This
 
-- `sender.py`: polls private messages, validates access, downloads content, chunks it, and uploads chunks to Bale
-- `receiver.py`: watches the configured Bale channel, rebuilds files, stores them on disk, and publishes protected download links
-- `docker-compose.yml`: local stack for sender, receiver, MinIO, and the protected download proxy
+- Run `sender` outside Iran.
+- Give `sender` normal access to the global internet.
+- Run `receiver` inside Iran.
+- Put both bots in the same Bale target/update channel flow.
 
-## Prerequisites
+Use these files:
 
-- Docker and Docker Compose
-- Two Bale bots: one for the sender, one for the receiver
-- A Bale chat/channel the bots can access
-- Strong secrets for `ARCHIVE_PASSWORD`, `DOWNLOAD_LINK_SECRET`, and `URL_RESPONSE_PASSWORD`
+- `docker-compose.sender.yml`: sender host outside Iran
+- `docker-compose.receiver.yml`: receiver host inside Iran
+- `docker-compose.yml`: all-in-one local test stack
 
-## Setup
+## Quick Start
 
-1. Fill `.env` from `.env.example`.
-2. Set these required values at minimum:
+1. Copy `.env.example` to `.env`.
+2. Fill these values:
    - `SENDER_BOT_TOKEN`
    - `RECEIVER_BOT_TOKEN`
    - `ARCHIVE_PASSWORD`
@@ -32,17 +32,38 @@
    - `URL_RESPONSE_PASSWORD`
    - `DOWNLOAD_BASIC_AUTH_USER`
    - `DOWNLOAD_BASIC_AUTH_PASSWORD`
-3. Start the stack:
+3. On the outside-Iran server:
+
+```bash
+docker compose -f docker-compose.sender.yml up -d --build
+```
+
+4. On the Iran server:
+
+```bash
+docker compose -f docker-compose.receiver.yml up -d --build
+```
+
+5. Ask the sender bot for a file or URL.
+
+## Before You Start
+
+- Make sure the sender host can reach the public internet.
+- Make sure the receiver host can serve `PUBLIC_DOWNLOAD_BASE_URL`.
+- Use strong secrets. Do not reuse simple passwords.
+- Set `ALLOWED_USERNAMES` or `ALLOWED_USER_IDS`. Without that, anyone who can message the sender bot could use it.
+
+## Local Test
+
+Use the all-in-one stack only for local testing:
 
 ```bash
 docker compose up -d --build
 ```
 
-The sender bot accepts requests from allowed users, uploads chunked payloads to Bale, and the receiver reconstructs them into protected download links served from `/files/...`.
-
 ## Generic `yt-dlp` Configuration
 
-The sender passes supported URLs straight to `yt-dlp`. Optional knobs:
+The sender passes URLs directly to `yt-dlp`.
 
 - `YTDLP_PROXY`
 - `YTDLP_COOKIE_FILE`
@@ -57,15 +78,9 @@ Example:
 YTDLP_EXTRA_OPTS_JSON={"extractor_args":{"generic":{"impersonate":["chrome"]}}}
 ```
 
-`YTDLP_EXTRA_OPTS_JSON` is merged into the base options object, so advanced users can supply extractor-specific settings without changing application code.
+`YTDLP_EXTRA_OPTS_JSON` is optional. It lets advanced users add raw `yt-dlp` options without editing the app.
 
-## Local Helpers
+## Helper Files
 
 - `python text_sender.py` sends a test message with `BOT_TOKEN` and `TARGET_CHAT_ID`
 - `python text_receiver.py` prints matching updates with `BOT_TOKEN` and `SOURCE_CHAT_ID`
-
-## Notes
-
-- The sender requires at least one allowed username or user ID.
-- The receiver requires a reachable public `PUBLIC_DOWNLOAD_BASE_URL`.
-- The public repo intentionally does not include deployment-specific CI/CD wiring.
