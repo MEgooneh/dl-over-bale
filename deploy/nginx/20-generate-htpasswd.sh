@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+: "${DOWNLOAD_BASIC_AUTH_USER:?DOWNLOAD_BASIC_AUTH_USER is required}"
+: "${DOWNLOAD_BASIC_AUTH_PASSWORD:?DOWNLOAD_BASIC_AUTH_PASSWORD is required}"
+
+htpasswd -bc /etc/nginx/.htpasswd "$DOWNLOAD_BASIC_AUTH_USER" "$DOWNLOAD_BASIC_AUTH_PASSWORD"

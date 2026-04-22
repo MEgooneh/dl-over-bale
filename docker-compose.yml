@@ -1,0 +1,128 @@
+services:
+  sender:
+    build:
+      context: .
+      dockerfile: Dockerfile.sender
+    command: ["python", "/app/sender.py"]
+    environment:
+      BOT_TOKEN: ${SENDER_BOT_TOKEN:?SENDER_BOT_TOKEN is required}
+      ARCHIVE_PASSWORD: ${ARCHIVE_PASSWORD:?ARCHIVE_PASSWORD is required}
+      CHANNEL_TARGET_CHAT_ID: ${CHANNEL_TARGET_CHAT_ID:?CHANNEL_TARGET_CHAT_ID is required}
+      CHANNEL_UPDATES_CHAT_ID: ${CHANNEL_UPDATES_CHAT_ID:?CHANNEL_UPDATES_CHAT_ID is required}
+      ALLOWED_USERNAMES: ${ALLOWED_USERNAMES:-}
+      ALLOWED_USER_IDS: ${ALLOWED_USER_IDS:-}
+      YTDLP_PROXY: ${YTDLP_PROXY:-}
+      YTDLP_COOKIE_FILE: ${YTDLP_COOKIE_FILE:-}
+      YTDLP_COOKIE_TEXT: ${YTDLP_COOKIE_TEXT:-}
+      YTDLP_COOKIE_TEXT_B64: ${YTDLP_COOKIE_TEXT_B64:-}
+      YTDLP_COOKIES_FROM_BROWSER: ${YTDLP_COOKIES_FROM_BROWSER:-}
+      YTDLP_EXTRA_OPTS_JSON: ${YTDLP_EXTRA_OPTS_JSON:-}
+      DB_PATH: /data/sender.sqlite3
+      WORK_ROOT: /data/work
+      DEFAULT_REQUEST_DOWNLOAD_LIMIT_BYTES: ${DEFAULT_REQUEST_DOWNLOAD_LIMIT_BYTES:-1073741824}
+      DOWNLOAD_LINK_TTL_SECONDS: ${DOWNLOAD_LINK_TTL_SECONDS:-3600}
+      URL_RESPONSE_PASSWORD: ${URL_RESPONSE_PASSWORD:?URL_RESPONSE_PASSWORD is required}
+      WORKER_COUNT: ${WORKER_COUNT:-1}
+      MAX_QUEUE_SIZE: ${MAX_QUEUE_SIZE:-5}
+      COMPLETION_WATCHDOG_INTERVAL_SECONDS: ${COMPLETION_WATCHDOG_INTERVAL_SECONDS:-30}
+      UPLOAD_CONFIRMATION_RETRY_SECONDS: ${UPLOAD_CONFIRMATION_RETRY_SECONDS:-120}
+      UPLOAD_CONFIRMATION_MAX_RETRIES: ${UPLOAD_CONFIRMATION_MAX_RETRIES:-15}
+      CHUNK_MESSAGE_RETENTION_SECONDS: ${CHUNK_MESSAGE_RETENTION_SECONDS:-86400}
+      CHUNK_MESSAGE_CLEAN_INTERVAL_SECONDS: ${CHUNK_MESSAGE_CLEAN_INTERVAL_SECONDS:-3600}
+      STATS_ADMIN_USERNAMES: ${STATS_ADMIN_USERNAMES:-}
+      STATS_ADMIN_USER_IDS: ${STATS_ADMIN_USER_IDS:-}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - sender-data:/data
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-08T15-41-24Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+
+  download-cleaner:
+    image: alpine:3.21
+    command: ["/bin/sh", "/usr/local/bin/download-cleaner.sh"]
+    environment:
+      DOWNLOAD_ROOT: /srv/downloads
+      DOWNLOAD_FILE_TTL_MINUTES: ${DOWNLOAD_FILE_TTL_MINUTES:-60}
+      DOWNLOAD_CLEAN_INTERVAL_SECONDS: ${DOWNLOAD_CLEAN_INTERVAL_SECONDS:-300}
+    volumes:
+      - downloads-data:/srv/downloads
+      - ./deploy/downloads/cleaner.sh:/usr/local/bin/download-cleaner.sh:ro
+    restart: unless-stopped
+
+  download-proxy:
+    build:
+      context: .
+      dockerfile: deploy/nginx/Dockerfile
+    depends_on:
+      - download-cleaner
+    environment:
+      NGINX_ENVSUBST_FILTER: ^(NGINX_PORT|DOWNLOAD_LINK_SECRET|DOWNLOAD_RATE_LIMIT_RPS|DOWNLOAD_RATE_LIMIT_BURST|DOWNLOAD_RATE_LIMIT_CONNECTIONS)$
+      NGINX_PORT: 8080
+      DOWNLOAD_BASIC_AUTH_USER: ${DOWNLOAD_BASIC_AUTH_USER:?DOWNLOAD_BASIC_AUTH_USER is required}
+      DOWNLOAD_BASIC_AUTH_PASSWORD: ${DOWNLOAD_BASIC_AUTH_PASSWORD:?DOWNLOAD_BASIC_AUTH_PASSWORD is required}
+      DOWNLOAD_LINK_SECRET: ${DOWNLOAD_LINK_SECRET:?DOWNLOAD_LINK_SECRET is required}
+      DOWNLOAD_RATE_LIMIT_RPS: ${DOWNLOAD_RATE_LIMIT_RPS:-5}
+      DOWNLOAD_RATE_LIMIT_BURST: ${DOWNLOAD_RATE_LIMIT_BURST:-20}
+      DOWNLOAD_RATE_LIMIT_CONNECTIONS: ${DOWNLOAD_RATE_LIMIT_CONNECTIONS:-4}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
+    ports:
+      - "${DOWNLOAD_NGINX_PORT:-8080}:8080"
+    volumes:
+      - downloads-data:/srv/downloads:ro
+    restart: unless-stopped
+
+  receiver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "/app/receiver.py"]
+    depends_on:
+      - minio
+      - download-cleaner
+      - download-proxy
+    environment:
+      BOT_TOKEN: ${RECEIVER_BOT_TOKEN:?RECEIVER_BOT_TOKEN is required}
+      ARCHIVE_PASSWORD: ${ARCHIVE_PASSWORD:?ARCHIVE_PASSWORD is required}
+      CHANNEL_CHAT_ID: ${CHANNEL_UPDATES_CHAT_ID:?CHANNEL_UPDATES_CHAT_ID is required}
+      WORK_ROOT: /data/work
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_BASE_URL: ${MINIO_PUBLIC_BASE_URL:-http://minio:9000}
+      MINIO_BUCKET: ${MINIO_BUCKET:-downloads}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      MINIO_RETENTION_HOURS: ${MINIO_RETENTION_HOURS:-1}
+      MINIO_RETRY_INTERVAL_SECONDS: ${MINIO_RETRY_INTERVAL_SECONDS:-300}
+      MISSING_PART_RETRIES: ${MISSING_PART_RETRIES:-5}
+      PUBLIC_DOWNLOAD_ROOT: /srv/downloads
+      PUBLIC_DOWNLOAD_BASE_URL: ${PUBLIC_DOWNLOAD_BASE_URL:?PUBLIC_DOWNLOAD_BASE_URL is required}
+      DOWNLOAD_LINK_SECRET: ${DOWNLOAD_LINK_SECRET:?DOWNLOAD_LINK_SECRET is required}
+      DOWNLOAD_LINK_TTL_SECONDS: ${DOWNLOAD_LINK_TTL_SECONDS:-3600}
+      URL_RESPONSE_PASSWORD: ${URL_RESPONSE_PASSWORD:?URL_RESPONSE_PASSWORD is required}
+      PUBLIC_DOWNLOAD_RETENTION_SECONDS: ${PUBLIC_DOWNLOAD_RETENTION_SECONDS:-3600}
+      PUBLIC_DOWNLOAD_CLEAN_INTERVAL_SECONDS: ${PUBLIC_DOWNLOAD_CLEAN_INTERVAL_SECONDS:-300}
+      WORKER_COUNT: ${WORKER_COUNT:-1}
+      MAX_QUEUE_SIZE: ${MAX_QUEUE_SIZE:-5}
+    volumes:
+      - receiver-data:/data
+      - downloads-data:/srv/downloads
+    restart: unless-stopped
+
+volumes:
+  sender-data:
+  minio-data:
+  receiver-data:
+  downloads-data:

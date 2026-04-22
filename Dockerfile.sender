@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends p7zip-full ca-certificates ffmpeg nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.sender.txt /app/requirements.sender.txt
+RUN pip install --no-cache-dir --pre "yt-dlp[default]" \
+    && pip install --no-cache-dir -r /app/requirements.sender.txt
+
+COPY sender.py /app/
+
+ENV PYTHONUNBUFFERED=1

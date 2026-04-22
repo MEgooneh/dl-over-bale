@@ -1,0 +1,52 @@
+limit_req_zone $binary_remote_addr zone=download_per_ip:10m rate=${DOWNLOAD_RATE_LIMIT_RPS}r/s;
+limit_conn_zone $binary_remote_addr zone=download_conn_per_ip:10m;
+
+server {
+    listen ${NGINX_PORT};
+    server_name _;
+
+    access_log /var/log/nginx/access.log;
+    error_log /var/log/nginx/error.log warn;
+    include /etc/nginx/real-ip.conf;
+
+    sendfile on;
+    tcp_nopush on;
+    keepalive_timeout 30;
+    client_body_timeout 15;
+    send_timeout 300;
+
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    location /files/ {
+        auth_basic "Protected downloads";
+        auth_basic_user_file /etc/nginx/.htpasswd;
+
+        secure_link $arg_md5,$arg_expires;
+        secure_link_md5 "$secure_link_expires$uri ${DOWNLOAD_LINK_SECRET}";
+
+        if ($secure_link = "") {
+            return 403;
+        }
+
+        if ($secure_link = "0") {
+            return 410;
+        }
+
+        limit_req zone=download_per_ip burst=${DOWNLOAD_RATE_LIMIT_BURST} nodelay;
+        limit_conn download_conn_per_ip ${DOWNLOAD_RATE_LIMIT_CONNECTIONS};
+
+        alias /srv/downloads/;
+        disable_symlinks if_not_owner from=/srv/downloads;
+        autoindex off;
+
+        add_header Accept-Ranges "bytes" always;
+        add_header Cache-Control "private, max-age=300" always;
+    }
+}
