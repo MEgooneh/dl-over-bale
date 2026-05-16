@@ -1,14 +1,14 @@
 services:
   download-cleaner:
-    image: alpine:3.21
-    command: ["/bin/sh", "/usr/local/bin/download-cleaner.sh"]
+    build:
+      context: .
+      dockerfile: deploy/downloads/Dockerfile
     environment:
       DOWNLOAD_ROOT: /srv/downloads
       DOWNLOAD_FILE_TTL_MINUTES: ${DOWNLOAD_FILE_TTL_MINUTES:-60}
       DOWNLOAD_CLEAN_INTERVAL_SECONDS: ${DOWNLOAD_CLEAN_INTERVAL_SECONDS:-300}
     volumes:
       - downloads-data:/srv/downloads
-      - ./deploy/downloads/cleaner.sh:/usr/local/bin/download-cleaner.sh:ro
     restart: unless-stopped
 
   download-proxy:
@@ -37,14 +37,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["python", "/app/receiver.py"]
+      args:
+        APT_MIRROR: ${APT_MIRROR:-}
     depends_on:
       - download-cleaner
       - download-proxy
     environment:
-      BOT_TOKEN: ${RECEIVER_BOT_TOKEN:?RECEIVER_BOT_TOKEN is required}
+      BOT_TOKEN: ${BOT_TOKEN:?BOT_TOKEN is required}
       ARCHIVE_PASSWORD: ${ARCHIVE_PASSWORD:?ARCHIVE_PASSWORD is required}
-      CHANNEL_CHAT_ID: ${CHANNEL_UPDATES_CHAT_ID:?CHANNEL_UPDATES_CHAT_ID is required}
+      CHANNEL_CHAT_ID: ${CHANNEL_CHAT_ID:?CHANNEL_CHAT_ID is required}
       WORK_ROOT: /data/work
       MISSING_PART_RETRIES: ${MISSING_PART_RETRIES:-5}
       PUBLIC_DOWNLOAD_ROOT: /srv/downloads
@@ -56,6 +57,11 @@ services:
       PUBLIC_DOWNLOAD_CLEAN_INTERVAL_SECONDS: ${PUBLIC_DOWNLOAD_CLEAN_INTERVAL_SECONDS:-300}
       WORKER_COUNT: ${WORKER_COUNT:-1}
       MAX_QUEUE_SIZE: ${MAX_QUEUE_SIZE:-5}
+      INGEST_TOKEN: ${INGEST_TOKEN:?INGEST_TOKEN is required}
+      INGEST_PORT: 8090
+      SENDER_CONTROL_BASE_URL: ${SENDER_CONTROL_BASE_URL:?SENDER_CONTROL_BASE_URL is required}
+    ports:
+      - "${INGEST_PORT:-8090}:8090"
     volumes:
       - receiver-data:/data
       - downloads-data:/srv/downloads

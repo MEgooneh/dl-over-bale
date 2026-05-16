@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dl-over-bale"
+version = "0.1.0"
+description = "Transfer downloaded files through Bale with sender and receiver services."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13,<3.14"
+authors = [
+  { name = "Open Source Contributors" },
+]
+keywords = ["bale", "bot", "docker", "download", "messenger", "yt-dlp"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Communications :: Chat",
+  "Topic :: Internet",
+]
+dependencies = [
+  "httpx>=0.27,<1.0",
+]
+
+[project.optional-dependencies]
+sender = [
+  "yt-dlp[default] @ https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.tar.gz",
+]
+
+[project.scripts]
+dl-over-bale-sender = "dl_over_bale.sender:poll_forever"
+dl-over-bale-receiver = "dl_over_bale.receiver:serve_forever"
+dl-over-bale-text-sender = "dl_over_bale.text_sender:main"
+dl-over-bale-text-receiver = "dl_over_bale.text_receiver:main"
+
+[dependency-groups]
+dev = [
+  "ruff>=0.11.0",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dl_over_bale"]
+
+[tool.hatch.metadata]
+allow-direct-references = true

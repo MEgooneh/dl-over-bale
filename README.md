@@ -1,67 +1,90 @@
 # DL Over Bale
 
-Move files through Bale. The sender downloads and uploads chunks. The receiver rebuilds files and serves short-lived protected links.
+`dl-over-bale` moves downloaded files through Bale using two Python services:
 
-## Deploy It Like This
+- `sender`: runs on a host with normal internet access, downloads the source URL, chunks it, and uploads the parts to Bale.
+- `receiver`: runs on a host that can serve downloads locally, rebuilds the file, stores it, and exposes a short-lived download URL.
 
-- Run `sender` outside Iran.
-- Give `sender` normal access to the global internet.
-- Run `receiver` inside Iran.
-- Put both bots in the same Bale target/update channel flow.
+The repository is now Docker-first:
 
-Use these files:
+- Python `3.13`
+- `uv` for dependency management and locking
+- `ruff` for linting and formatting
+- `yt-dlp` nightly for the sender service
 
-- `docker-compose.sender.yml`: sender host outside Iran
-- `docker-compose.receiver.yml`: receiver host inside Iran
-- `docker-compose.yml`: all-in-one local test stack
+## Architecture
+
+- `docker-compose.sender.yml`: sender-only deployment
+- `docker-compose.receiver.yml`: receiver-only deployment
+- `docker-compose.yml`: combined local stack for one-machine testing
+- `src/dl_over_bale/`: packaged application code
+- `deploy/nginx/`: protected download proxy image
+- `deploy/downloads/`: download cleanup image
 
 ## Quick Start
 
-1. Copy `.env.example` to `.env`.
-2. Fill these values:
-   - `SENDER_BOT_TOKEN`
-   - `RECEIVER_BOT_TOKEN`
-   - `ARCHIVE_PASSWORD`
-   - `CHANNEL_TARGET_CHAT_ID`
-   - `CHANNEL_UPDATES_CHAT_ID`
-   - `ALLOWED_USERNAMES` or `ALLOWED_USER_IDS`
-   - `PUBLIC_DOWNLOAD_BASE_URL`
-   - `DOWNLOAD_LINK_SECRET`
-   - `URL_RESPONSE_PASSWORD`
-   - `DOWNLOAD_BASIC_AUTH_USER`
-   - `DOWNLOAD_BASIC_AUTH_PASSWORD`
-3. On the outside-Iran server:
+1. Copy the environment file:
 
 ```bash
-docker compose -f docker-compose.sender.yml up -d --build
+cp .env.example .env
 ```
 
-4. On the Iran server:
+2. Fill the required values in `.env`:
+
+- `BOT_TOKEN`
+- `CHANNEL_CHAT_ID`
+- `ARCHIVE_PASSWORD`
+- `INGEST_TOKEN`
+- `URL_RESPONSE_PASSWORD`
+- `DOWNLOAD_LINK_SECRET`
+- `DOWNLOAD_BASIC_AUTH_USER`
+- `DOWNLOAD_BASIC_AUTH_PASSWORD`
+- `ALLOWED_USERNAMES` or `ALLOWED_USER_IDS`
+- `PUBLIC_DOWNLOAD_BASE_URL`
+
+3. Set the cross-service URLs:
+
+- On the sender host: `RECEIVER_INGEST_BASE_URL=http://RECEIVER_IP:8090`
+- On the receiver host: `SENDER_CONTROL_BASE_URL=http://SENDER_IP:8091`
+
+Use the peer address that is actually routable from the other host. If the two hosts already have a private tunnel, prefer that private address over the public IP.
+
+## Deploy With Docker
+
+Receiver host:
 
 ```bash
-docker compose -f docker-compose.receiver.yml up -d --build
+docker compose --env-file .env -f docker-compose.receiver.yml up -d --build
 ```
 
-5. Ask the sender bot for a file or URL.
-
-## Before You Start
-
-- Make sure the sender host can reach the public internet.
-- Make sure the receiver host can serve `PUBLIC_DOWNLOAD_BASE_URL`.
-- Use strong secrets. Do not reuse simple passwords.
-- Set `ALLOWED_USERNAMES` or `ALLOWED_USER_IDS`. Without that, anyone who can message the sender bot could use it.
-
-## Local Test
-
-Use the all-in-one stack only for local testing:
+Sender host:
 
 ```bash
-docker compose up -d --build
+docker compose --env-file .env -f docker-compose.sender.yml up -d --build
 ```
 
-## Generic `yt-dlp` Configuration
+Local one-machine test:
 
-The sender passes URLs directly to `yt-dlp`.
+```bash
+docker compose --env-file .env up -d --build
+```
+
+The runtime images are self-contained. Deployment only needs Docker, the compose file, and environment variables.
+
+## Bale Setup
+
+1. Create a Bale channel.
+2. Create a bot with `@botfather`.
+3. Enable `اضافه شدن به گروه` for the bot.
+4. Add the bot to the channel.
+5. Promote the bot to channel admin.
+6. Copy the bot token and the channel id into `.env`.
+
+## `yt-dlp` Nightly
+
+The sender image installs `yt-dlp` from the official nightly builds channel. The current lockfile resolves the latest nightly available when it was generated.
+
+Optional sender-side environment variables:
 
 - `YTDLP_PROXY`
 - `YTDLP_COOKIE_FILE`
@@ -69,6 +92,9 @@ The sender passes URLs directly to `yt-dlp`.
 - `YTDLP_COOKIE_TEXT_B64`
 - `YTDLP_COOKIES_FROM_BROWSER`
 - `YTDLP_EXTRA_OPTS_JSON`
+- `TRANSFER_CHUNK_SIZE`
+- `UPLOAD_RETRIES`
+- `UPLOAD_COMPLETE_SETTLE_SECONDS`
 
 Example:
 
@@ -76,9 +102,59 @@ Example:
 YTDLP_EXTRA_OPTS_JSON={"extractor_args":{"generic":{"impersonate":["chrome"]}}}
 ```
 
-`YTDLP_EXTRA_OPTS_JSON` is optional. It lets advanced users add raw `yt-dlp` options without editing the app.
+For Bale upload stability, the current defaults use:
 
-## Helper Files
+- `TRANSFER_CHUNK_SIZE=12582912` (`12 MiB`)
+- `UPLOAD_RETRIES=8`
+- `UPLOAD_COMPLETE_SETTLE_SECONDS=30`
 
-- `python text_sender.py` sends a test message with `BOT_TOKEN` and `TARGET_CHAT_ID`
-- `python text_receiver.py` prints matching updates with `BOT_TOKEN` and `SOURCE_CHAT_ID`
+If Bale starts returning repeated `500` or `504` errors on `sendDocument`, lower `TRANSFER_CHUNK_SIZE` further before changing anything else.
+
+## Development
+
+Install the local environment:
+
+```bash
+uv sync --extra sender
+```
+
+Run the linters:
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+```
+
+Run the helper scripts:
+
+```bash
+uv run dl-over-bale-text-sender
+uv run dl-over-bale-text-receiver
+```
+
+Direct script execution still works from a checkout:
+
+```bash
+python sender.py
+python receiver.py
+```
+
+## Updating Dependencies
+
+- Refresh the lockfile: `uv lock --upgrade`
+- Refresh `yt-dlp` nightly explicitly: `uv lock --upgrade-package yt-dlp`
+- Rebuild images after updating dependencies: `docker compose build --no-cache`
+
+## Security Notes
+
+- Restrict bot access with `ALLOWED_USERNAMES` or `ALLOWED_USER_IDS`.
+- Use strong values for `ARCHIVE_PASSWORD`, `INGEST_TOKEN`, `URL_RESPONSE_PASSWORD`, and `DOWNLOAD_LINK_SECRET`.
+- Keep the sender control port and receiver ingest port reachable only by the corresponding peer host.
+- Protect the receiver download proxy with strong basic auth credentials.
+
+## Helper Scripts
+
+- `dl-over-bale-text-sender`: sends a raw test message to a chat
+- `dl-over-bale-text-receiver`: listens to raw Bale updates for debugging
+
+These helpers are for low-level integration checks only. Normal deployments use the sender and receiver services.

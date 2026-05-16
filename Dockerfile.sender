@@ -1,15 +1,50 @@
-FROM python:3.12-slim
+FROM python:3.13-slim AS builder
+
+ARG APT_MIRROR=
+ARG UV_VERSION=0.11.14
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends p7zip-full ca-certificates ffmpeg nodejs \
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/app/.venv
+
+RUN if [ -n "$APT_MIRROR" ]; then \
+        sed -i "s|http://deb.debian.org/debian|$APT_MIRROR|g; s|http://deb.debian.org/debian-security|$APT_MIRROR-security|g" /etc/apt/sources.list.d/debian.sources; \
+        export APT_FLAGS='-o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false'; \
+    else \
+        export APT_FLAGS=''; \
+    fi \
+    && apt-get $APT_FLAGS update \
+    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg nodejs p7zip-full \
+    && curl --proto '=https' --tlsv1.2 -LsSf "https://releases.astral.sh/github/uv/releases/download/${UV_VERSION}/uv-installer.sh" | env UV_INSTALL_DIR=/usr/local/bin sh \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.sender.txt /app/requirements.sender.txt
-RUN pip install --no-cache-dir --pre "yt-dlp[default]" \
-    && pip install --no-cache-dir -r /app/requirements.sender.txt
+COPY pyproject.toml uv.lock README.md .python-version /app/
+RUN uv sync --frozen --no-dev --extra sender --no-install-project
 
-COPY sender.py /app/
+FROM python:3.13-slim AS runtime
 
-ENV PYTHONUNBUFFERED=1
+ARG APT_MIRROR=
+
+WORKDIR /app
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONPATH="/app/src" \
+    PYTHONUNBUFFERED=1
+
+RUN if [ -n "$APT_MIRROR" ]; then \
+        sed -i "s|http://deb.debian.org/debian|$APT_MIRROR|g; s|http://deb.debian.org/debian-security|$APT_MIRROR-security|g" /etc/apt/sources.list.d/debian.sources; \
+        export APT_FLAGS='-o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false'; \
+    else \
+        export APT_FLAGS=''; \
+    fi \
+    && apt-get $APT_FLAGS update \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg nodejs p7zip-full \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/.venv /app/.venv
+COPY src /app/src
+
+ENTRYPOINT ["python", "-m", "dl_over_bale.sender"]
