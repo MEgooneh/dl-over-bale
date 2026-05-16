@@ -6,7 +6,7 @@ services:
       args:
         APT_MIRROR: ${APT_MIRROR:-}
     environment:
-      BOT_TOKEN: ${BOT_TOKEN:?BOT_TOKEN is required}
+      BOT_TOKEN: ${SENDER_BOT_TOKEN:?SENDER_BOT_TOKEN is required}
       ARCHIVE_PASSWORD: ${ARCHIVE_PASSWORD:?ARCHIVE_PASSWORD is required}
       CHANNEL_CHAT_ID: ${CHANNEL_CHAT_ID:?CHANNEL_CHAT_ID is required}
       ALLOWED_USERNAMES: ${ALLOWED_USERNAMES:-}
@@ -31,9 +31,6 @@ services:
       CHUNK_MESSAGE_CLEAN_INTERVAL_SECONDS: ${CHUNK_MESSAGE_CLEAN_INTERVAL_SECONDS:-3600}
       STATS_ADMIN_USERNAMES: ${STATS_ADMIN_USERNAMES:-}
       STATS_ADMIN_USER_IDS: ${STATS_ADMIN_USER_IDS:-}
-      RECEIVER_INGEST_BASE_URL: http://receiver:8090
-      RECEIVER_INGEST_TOKEN: ${INGEST_TOKEN:?INGEST_TOKEN is required}
-      SENDER_CONTROL_PORT: 8091
     extra_hosts:
       - host.docker.internal:host-gateway
     volumes:
@@ -84,7 +81,7 @@ services:
       - download-cleaner
       - download-proxy
     environment:
-      BOT_TOKEN: ${BOT_TOKEN:?BOT_TOKEN is required}
+      BOT_TOKEN: ${RECEIVER_BOT_TOKEN:?RECEIVER_BOT_TOKEN is required}
       ARCHIVE_PASSWORD: ${ARCHIVE_PASSWORD:?ARCHIVE_PASSWORD is required}
       CHANNEL_CHAT_ID: ${CHANNEL_CHAT_ID:?CHANNEL_CHAT_ID is required}
       WORK_ROOT: /data/work
@@ -98,9 +95,6 @@ services:
       PUBLIC_DOWNLOAD_CLEAN_INTERVAL_SECONDS: ${PUBLIC_DOWNLOAD_CLEAN_INTERVAL_SECONDS:-300}
       WORKER_COUNT: ${WORKER_COUNT:-1}
       MAX_QUEUE_SIZE: ${MAX_QUEUE_SIZE:-5}
-      INGEST_TOKEN: ${INGEST_TOKEN:?INGEST_TOKEN is required}
-      INGEST_PORT: 8090
-      SENDER_CONTROL_BASE_URL: http://sender:8091
     volumes:
       - receiver-data:/data
       - downloads-data:/srv/downloads

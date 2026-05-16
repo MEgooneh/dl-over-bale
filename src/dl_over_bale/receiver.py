@@ -15,8 +15,6 @@ import shutil
 import subprocess
 import threading
 import time
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import quote
@@ -46,13 +44,7 @@ DOWNLOAD_LINK_TTL_SECONDS = max(60, int(os.environ.get("DOWNLOAD_LINK_TTL_SECOND
 URL_RESPONSE_PASSWORD = os.environ.get("URL_RESPONSE_PASSWORD", "").strip()
 WORKER_COUNT = max(1, int(os.environ.get("WORKER_COUNT", "8")))
 MAX_QUEUE_SIZE = max(1, int(os.environ.get("MAX_QUEUE_SIZE", "1000")))
-INGEST_BIND = os.environ.get("INGEST_BIND", "0.0.0.0").strip() or "0.0.0.0"
-INGEST_PORT = max(1, int(os.environ.get("INGEST_PORT", "8090")))
-INGEST_TOKEN = os.environ.get("INGEST_TOKEN", "").strip()
-INGEST_QUEUE_SIZE = max(1, int(os.environ.get("INGEST_QUEUE_SIZE", str(MAX_QUEUE_SIZE * 4))))
-SENDER_CONTROL_BASE_URL = os.environ.get("SENDER_CONTROL_BASE_URL", "").strip().rstrip("/")
-SENDER_CONTROL_TOKEN = os.environ.get("SENDER_CONTROL_TOKEN", INGEST_TOKEN).strip()
-UPLOAD_COMPLETE_SETTLE_SECONDS = max(0.0, float(os.environ.get("UPLOAD_COMPLETE_SETTLE_SECONDS", "30")))
+POLL_TIMEOUT = int(os.environ.get("POLL_TIMEOUT", "30"))
 
 BALE_API = f"https://tapi.bale.ai/bot{BOT_TOKEN}"
 PART_CAPTION_RE = re.compile(r"^~([A-Za-z0-9_-]+)$")
@@ -66,9 +58,6 @@ job_queue: queue.Queue[str] = queue.Queue(maxsize=MAX_QUEUE_SIZE)
 workers_started = False
 MISSING_PART_RETRIES = max(1, int(os.environ.get("MISSING_PART_RETRIES", "5")))
 download_cleanup_started = False
-ingest_workers_started = False
-ingest_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=INGEST_QUEUE_SIZE)
-scheduled_missing_checks: set[str] = set()
 
 
 def ensure_prerequisites() -> None:
@@ -80,12 +69,6 @@ def ensure_prerequisites() -> None:
         raise RuntimeError("DOWNLOAD_LINK_SECRET is required for protected disk download links.")
     if not URL_RESPONSE_PASSWORD:
         raise RuntimeError("URL_RESPONSE_PASSWORD is required.")
-    if not INGEST_TOKEN:
-        raise RuntimeError("INGEST_TOKEN is required.")
-    if not SENDER_CONTROL_BASE_URL:
-        raise RuntimeError("SENDER_CONTROL_BASE_URL is required.")
-    if not SENDER_CONTROL_TOKEN:
-        raise RuntimeError("SENDER_CONTROL_TOKEN is required.")
     WORK_ROOT.mkdir(parents=True, exist_ok=True)
     PUBLIC_DOWNLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -100,6 +83,16 @@ def save_state(state: dict[str, Any]) -> None:
     temp_path = STATE_PATH.with_suffix(".tmp")
     temp_path.write_text(json.dumps(state, ensure_ascii=True, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temp_path.replace(STATE_PATH)
+
+
+def api_get(client: httpx.Client, method: str, *, params: dict[str, Any]) -> dict[str, Any]:
+    response = client.get(f"{BALE_API}/{method}", params=params, timeout=POLL_TIMEOUT + 5)
+    response.raise_for_status()
+    payload = response.json()
+    if not payload.get("ok", False):
+        description = payload.get("description") or payload.get("error") or "unknown Bale API error"
+        raise RuntimeError(f"Bale API {method} failed: {description}")
+    return payload
 
 
 def api_post(
@@ -121,44 +114,6 @@ def api_post(
 def send_channel_control(client: httpx.Client, prefix: str, payload: dict[str, Any]) -> None:
     text = prefix + encrypt_transport_payload(payload)
     api_post(client, "sendMessage", json={"chat_id": CHANNEL_CHAT_ID, "text": text})
-
-
-def send_control_to_sender(kind: str, payload: dict[str, Any]) -> None:
-    with httpx.Client() as client:
-        response = client.post(
-            f"{SENDER_CONTROL_BASE_URL}/control",
-            headers={"X-Ingest-Token": SENDER_CONTROL_TOKEN},
-            json={"kind": kind, "payload": payload},
-            timeout=REQUEST_TIMEOUT,
-        )
-        response.raise_for_status()
-
-
-def safe_send_control_to_sender(kind: str, payload: dict[str, Any]) -> None:
-    try:
-        send_control_to_sender(kind, payload)
-    except Exception:
-        log.exception("Failed sending %s control to sender for %s", kind, payload.get("request_id"))
-
-
-def schedule_missing_part_check(request_id: str, state: dict[str, Any]) -> None:
-    with state_lock:
-        if request_id in scheduled_missing_checks:
-            return
-        scheduled_missing_checks.add(request_id)
-
-    def worker() -> None:
-        try:
-            if UPLOAD_COMPLETE_SETTLE_SECONDS > 0:
-                time.sleep(UPLOAD_COMPLETE_SETTLE_SECONDS)
-            with httpx.Client() as client:
-                request_missing_parts(client, request_id, state)
-        finally:
-            with state_lock:
-                scheduled_missing_checks.discard(request_id)
-
-    thread = threading.Thread(target=worker, name=f"receiver-missing-check-{request_id}", daemon=True)
-    thread.start()
 
 
 def parse_control_message(text: str) -> tuple[str, dict[str, Any]] | None:
@@ -652,7 +607,8 @@ def process_completed_job(request_id: str, state: dict[str, Any]) -> None:
         )
         location = public_disk_url(relative_path)
         backend = "disk"
-        safe_send_control_to_sender("done", {"request_id": request_id, "backend": backend, "url": location})
+        with httpx.Client() as client:
+            send_channel_control(client, CONTROL_DONE_PREFIX, {"request_id": request_id, "backend": backend, "url": location})
         with state_lock:
             state.setdefault("completed_jobs", {})[request_id] = {
                 "completed_at": int(time.time()),
@@ -667,7 +623,8 @@ def process_completed_job(request_id: str, state: dict[str, Any]) -> None:
     except Exception as exc:
         error_text = str(exc).strip() or exc.__class__.__name__
         log.exception("Failed processing request %s", request_id)
-        safe_send_control_to_sender("fail", {"request_id": request_id, "error": error_text})
+        with httpx.Client() as client:
+            send_channel_control(client, CONTROL_FAIL_PREFIX, {"request_id": request_id, "error": error_text})
         with state_lock:
             state.setdefault("failed_jobs", {})[request_id] = {
                 "failed_at": int(time.time()),
@@ -767,10 +724,10 @@ def request_missing_parts(client: httpx.Client, request_id: str, state: dict[str
             save_state(state)
             should_fail = False
     if should_fail:
-        safe_send_control_to_sender("fail", {"request_id": request_id, "error": error_text})
+        send_channel_control(client, CONTROL_FAIL_PREFIX, {"request_id": request_id, "error": error_text})
         return
     log.warning("Requesting recovery for %s missing parts %s", request_id, missing)
-    safe_send_control_to_sender("retry", {"request_id": request_id, "missing": missing, "attempt": attempts + 1})
+    send_channel_control(client, CONTROL_RETRY_PREFIX, {"request_id": request_id, "missing": missing, "attempt": attempts + 1})
 
 
 def handle_upload_done_payload(payload: dict[str, Any], state: dict[str, Any]) -> None:
@@ -806,7 +763,8 @@ def handle_upload_done_payload(payload: dict[str, Any], state: dict[str, Any]) -
     job_dir = WORK_ROOT / "jobs" / request_id
     if maybe_queue_processing(request_id, state, job_dir):
         return
-    schedule_missing_part_check(request_id, state)
+    with httpx.Client() as client:
+        request_missing_parts(client, request_id, state)
 
 
 def handle_control_message(client: httpx.Client, message: dict[str, Any], state: dict[str, Any]) -> None:
@@ -896,35 +854,6 @@ def start_workers(state: dict[str, Any]) -> None:
         thread.start()
 
 
-def ingest_worker(state: dict[str, Any]) -> None:
-    with httpx.Client() as client:
-        while True:
-            message = ingest_queue.get()
-            try:
-                handle_control_message(client, message, state)
-                handle_document_message(client, message, state)
-            except Exception:
-                log.exception("Receiver ingest worker error")
-                time.sleep(IDLE_SLEEP)
-            finally:
-                ingest_queue.task_done()
-
-
-def start_ingest_workers(state: dict[str, Any]) -> None:
-    global ingest_workers_started
-    if ingest_workers_started:
-        return
-    ingest_workers_started = True
-    for index in range(WORKER_COUNT):
-        thread = threading.Thread(
-            target=ingest_worker,
-            args=(state,),
-            name=f"receiver-ingest-{index + 1}",
-            daemon=True,
-        )
-        thread.start()
-
-
 def start_public_download_cleanup_worker() -> None:
     global download_cleanup_started
     if download_cleanup_started:
@@ -949,81 +878,43 @@ def requeue_processing_jobs(state: dict[str, Any]) -> None:
                 break
 
 
-def make_handler(state: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
-    class IngestHandler(BaseHTTPRequestHandler):
-        server_version = "dl-over-bale-receiver/1.0"
-
-        def log_message(self, format: str, *args: Any) -> None:
-            log.info("Receiver ingest HTTP: " + format, *args)
-
-        def _json_response(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
-            body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def do_GET(self) -> None:
-            if self.path != "/healthz":
-                self._json_response(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
-                return
-            self._json_response(HTTPStatus.OK, {"ok": True})
-
-        def do_POST(self) -> None:
-            if self.path not in {"/ingest/message", "/ingest/control"}:
-                self._json_response(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
-                return
-            if self.headers.get("X-Ingest-Token", "").strip() != INGEST_TOKEN:
-                self._json_response(HTTPStatus.FORBIDDEN, {"ok": False, "error": "forbidden"})
-                return
-            try:
-                content_length = int(self.headers.get("Content-Length", "0"))
-            except ValueError:
-                self._json_response(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid content length"})
-                return
-            try:
-                payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
-            except Exception:
-                self._json_response(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid json"})
-                return
-            if self.path == "/ingest/message":
-                message = payload.get("message")
-                if not isinstance(message, dict):
-                    self._json_response(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "message is required"})
-                    return
-                try:
-                    ingest_queue.put_nowait(message)
-                except queue.Full:
-                    self._json_response(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": "ingest queue is full"})
-                    return
-            else:
-                kind = str(payload.get("kind") or "").strip()
-                control_payload = payload.get("payload")
-                if kind != "upload_done" or not isinstance(control_payload, dict):
-                    self._json_response(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid control payload"})
-                    return
-                handle_upload_done_payload(control_payload, state)
-            self._json_response(HTTPStatus.ACCEPTED, {"ok": True})
-
-    return IngestHandler
-
-
-def serve_forever() -> None:
+def poll_forever() -> None:
     ensure_prerequisites()
     state = load_state()
     start_workers(state)
-    start_ingest_workers(state)
     start_public_download_cleanup_worker()
     requeue_processing_jobs(state)
 
     with httpx.Client() as client:
         me = api_post(client, "getMe").get("result", {})
         log.info("Receiver bot ready: %s", me.get("username") or me.get("id") or "?")
-    log.info("Accepting forwarded Bale messages for channel %s on %s:%s", CHANNEL_CHAT_ID, INGEST_BIND, INGEST_PORT)
-    server = ThreadingHTTPServer((INGEST_BIND, INGEST_PORT), make_handler(state))
-    server.serve_forever()
+        log.info("Listening to Bale channel %s", CHANNEL_CHAT_ID)
+
+        while True:
+            try:
+                with state_lock:
+                    offset = state.get("offset")
+                params: dict[str, Any] = {"timeout": POLL_TIMEOUT, "allowed_updates": '["message","channel_post"]'}
+                if offset is not None:
+                    params["offset"] = offset
+                updates = api_get(client, "getUpdates", params=params).get("result", [])
+                if not updates:
+                    time.sleep(IDLE_SLEEP)
+                    continue
+                for update in updates:
+                    with state_lock:
+                        state["offset"] = int(update["update_id"]) + 1
+                        save_state(state)
+                    message = update.get("message") or update.get("channel_post")
+                    if isinstance(message, dict):
+                        handle_control_message(client, message, state)
+                        handle_document_message(client, message, state)
+            except httpx.TimeoutException:
+                continue
+            except Exception:
+                log.exception("Receiver polling error")
+                time.sleep(5)
 
 
 if __name__ == "__main__":
-    serve_forever()
+    poll_forever()

@@ -33,7 +33,7 @@ sender = [
 
 [project.scripts]
 dl-over-bale-sender = "dl_over_bale.sender:poll_forever"
-dl-over-bale-receiver = "dl_over_bale.receiver:serve_forever"
+dl-over-bale-receiver = "dl_over_bale.receiver:poll_forever"
 dl-over-bale-text-sender = "dl_over_bale.text_sender:main"
 dl-over-bale-text-receiver = "dl_over_bale.text_receiver:main"
 

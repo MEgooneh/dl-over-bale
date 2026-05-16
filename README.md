@@ -1,51 +1,47 @@
 # DL Over Bale
 
-Move files through Bale with two services:
+Move files through Bale with:
 
-- `sender`: runs on a host with normal internet access
-- `receiver`: runs on a host that serves the final download link
-
-Both services use:
-
-- one Bale bot
-- one bot token
-- one Bale channel
-
-## Bale Setup
-
-1. Create a channel in Bale.
-2. Create a bot with `@botfather`.
-3. Enable `اضافه شدن به گروه` for that bot.
-4. Add the bot to the channel.
-5. Make the bot a channel admin.
-6. Copy the bot token and the channel id.
+- `sender`: downloads the file and uploads parts to a Bale channel
+- `receiver`: reads the same Bale channel, rebuilds the file, and serves the final download link
 
 ## Setup
 
+You need:
+
+- one Bale channel
+- two Bale bots
+  - one sender bot
+  - one receiver bot
+
+For both bots:
+
+1. Create them with `@botfather`.
+2. Enable `اضافه شدن به گروه`.
+3. Add both bots to the same channel.
+4. Make both bots channel admins.
+
+Then:
+
 1. Copy `.env.example` to `.env` on both hosts.
-2. Fill these values:
-   - `BOT_TOKEN`
+2. Set the same values on both hosts:
    - `CHANNEL_CHAT_ID`
    - `ARCHIVE_PASSWORD`
-   - `INGEST_TOKEN`
-   - `URL_RESPONSE_PASSWORD`
    - `DOWNLOAD_LINK_SECRET`
+   - `URL_RESPONSE_PASSWORD`
    - `DOWNLOAD_BASIC_AUTH_USER`
    - `DOWNLOAD_BASIC_AUTH_PASSWORD`
-   - `ALLOWED_USERNAMES` or `ALLOWED_USER_IDS`
-   - `PUBLIC_DOWNLOAD_BASE_URL`
 3. On the sender host, set:
-   - `RECEIVER_INGEST_BASE_URL=http://RECEIVER_IP:8090`
+   - `SENDER_BOT_TOKEN`
+   - `ALLOWED_USERNAMES` or `ALLOWED_USER_IDS`
 4. On the receiver host, set:
-   - `SENDER_CONTROL_BASE_URL=http://SENDER_IP:8091`
-5. If the host cannot reach the default Debian package servers during `docker build`, set:
-   - `APT_MIRROR=...`
+   - `RECEIVER_BOT_TOKEN`
+   - `PUBLIC_DOWNLOAD_BASE_URL`
 
-The current tested defaults can stay as they are:
+The tested sender defaults are:
 
 - `TRANSFER_CHUNK_SIZE=12582912`
 - `UPLOAD_RETRIES=8`
-- `UPLOAD_COMPLETE_SETTLE_SECONDS=30`
 
 ## Deploy
 
@@ -61,14 +57,6 @@ On the sender host:
 docker compose --env-file .env -f docker-compose.sender.yml up -d --build
 ```
 
-## Network
-
-- sender must reach receiver `:8090`
-- receiver must reach sender `:8091`
-- users must reach receiver download proxy `:8080`
-
-Use a private or otherwise reachable peer address for `RECEIVER_INGEST_BASE_URL` and `SENDER_CONTROL_BASE_URL`.
-
 ## Use
 
-Send a URL to the bot in a private chat.
+Send a URL to the sender bot in a private chat.

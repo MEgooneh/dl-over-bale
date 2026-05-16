@@ -19,8 +19,6 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -97,12 +95,6 @@ DEFAULT_YTDLP_COOKIE_FILE = Path("/run/secrets/ytdlp.cookies.txt")
 INLINE_COOKIE_PATH = Path("/tmp/dl-over-bale-ytdlp-cookies.txt")
 DOWNLOAD_LINK_TTL_SECONDS = max(60, int(os.environ.get("DOWNLOAD_LINK_TTL_SECONDS", "10800")))
 URL_RESPONSE_PASSWORD = os.environ.get("URL_RESPONSE_PASSWORD", "").strip()
-RECEIVER_INGEST_BASE_URL = os.environ.get("RECEIVER_INGEST_BASE_URL", "").strip().rstrip("/")
-RECEIVER_INGEST_TOKEN = os.environ.get("RECEIVER_INGEST_TOKEN", "").strip()
-RECEIVER_INGEST_TIMEOUT = max(5.0, float(os.environ.get("RECEIVER_INGEST_TIMEOUT", "60")))
-SENDER_CONTROL_BIND = os.environ.get("SENDER_CONTROL_BIND", "0.0.0.0").strip() or "0.0.0.0"
-SENDER_CONTROL_PORT = max(1, int(os.environ.get("SENDER_CONTROL_PORT", "8091")))
-SENDER_CONTROL_TOKEN = os.environ.get("SENDER_CONTROL_TOKEN", RECEIVER_INGEST_TOKEN).strip()
 YTDLP_FORMAT_CANDIDATES = (
     "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
     "bestvideo+bestaudio/best",
@@ -162,7 +154,6 @@ recovery_lock = threading.Lock()
 recovering_requests: set[str] = set()
 completion_watchdog_started = False
 chunk_message_cleanup_started = False
-sender_control_started = False
 
 
 @dataclass
@@ -200,12 +191,6 @@ def ensure_prerequisites() -> None:
         raise RuntimeError("Configure ALLOWED_USERNAMES or ALLOWED_USER_IDS for sender access control.")
     if not URL_RESPONSE_PASSWORD:
         raise RuntimeError("URL_RESPONSE_PASSWORD is required.")
-    if not RECEIVER_INGEST_BASE_URL:
-        raise RuntimeError("RECEIVER_INGEST_BASE_URL is required.")
-    if not RECEIVER_INGEST_TOKEN:
-        raise RuntimeError("RECEIVER_INGEST_TOKEN is required.")
-    if not SENDER_CONTROL_TOKEN:
-        raise RuntimeError("SENDER_CONTROL_TOKEN is required.")
     WORK_ROOT.mkdir(parents=True, exist_ok=True)
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1680,7 +1665,6 @@ def upload_local_file_to_channel(
                 archive_path,
                 build_part_caption(request_id, chunk_index, manifest.total_chunks, archive_path.name, mode="chunked"),
             )
-            forward_message_to_receiver(upload_client, message)
             message_id = int(message.get("message_id") or 0)
             if message_id > 0:
                 record_uploaded_chunk_message(
@@ -1808,7 +1792,6 @@ def stream_download_to_channel(
                             request_id, chunk_index, manifest.total_chunks, archive_path.name, mode="chunked"
                         ),
                     )
-                    forward_message_to_receiver(upload_client, message)
                     message_id = int(message.get("message_id") or 0)
                     if message_id > 0:
                         record_uploaded_chunk_message(
@@ -1856,9 +1839,10 @@ def cleanup_request_workdir(request_id: str) -> None:
 
 
 def notify_upload_complete(client: httpx.Client, manifest: ChunkManifest) -> None:
-    send_control_to_receiver(
+    send_control_message(
         client,
-        "upload_done",
+        CHANNEL_TARGET_CHAT_ID,
+        CONTROL_UPLOAD_DONE_PREFIX,
         {
             "request_id": manifest.request_id,
             "total": manifest.total_chunks,
@@ -1981,7 +1965,6 @@ def resend_missing_parts(request_id: str, missing_parts: list[int]) -> None:
                         archive_path,
                         build_part_caption(request_id, index, manifest.total_chunks, archive_path.name, mode="chunked"),
                     )
-                    forward_message_to_receiver(client, message)
                     message_id = int(message.get("message_id") or 0)
                     if message_id > 0:
                         record_uploaded_chunk_message(
@@ -2258,48 +2241,13 @@ def chat_matches_config(chat: dict[str, Any], configured_chat: str) -> bool:
     return bool(configured_username and chat_username and configured_username == chat_username)
 
 
-def forwarded_channel_message(message: dict[str, Any]) -> bool:
-    if isinstance(message.get("document"), dict):
-        return True
-    text = str(message.get("text") or "").strip()
-    return text.startswith(CONTROL_UPLOAD_DONE_PREFIX)
-
-
-def receiver_ingest_url() -> str:
-    return f"{RECEIVER_INGEST_BASE_URL}/ingest/message"
-
-
-def receiver_ingest_control_url() -> str:
-    return f"{RECEIVER_INGEST_BASE_URL}/ingest/control"
-
-
-def forward_message_to_receiver(client: httpx.Client, message: dict[str, Any]) -> None:
-    response = client.post(
-        receiver_ingest_url(),
-        headers={"X-Ingest-Token": RECEIVER_INGEST_TOKEN},
-        json={"message": message},
-        timeout=RECEIVER_INGEST_TIMEOUT,
-    )
-    response.raise_for_status()
-
-
-def send_control_to_receiver(client: httpx.Client, kind: str, payload: dict[str, Any]) -> None:
-    response = client.post(
-        receiver_ingest_control_url(),
-        headers={"X-Ingest-Token": RECEIVER_INGEST_TOKEN},
-        json={"kind": kind, "payload": payload},
-        timeout=RECEIVER_INGEST_TIMEOUT,
-    )
-    response.raise_for_status()
-
-
-def handle_direct_control(client: httpx.Client, kind: str, payload: dict[str, Any]) -> None:
+def handle_channel_control(client: httpx.Client, kind: str, payload: dict[str, Any]) -> None:
     request_id = str(payload.get("request_id") or "").strip()
     if not request_id:
         return
     record = get_request_record(request_id)
     if record is None:
-        log.info("Ignoring direct control for unknown request %s", request_id)
+        log.info("Ignoring channel control for unknown request %s", request_id)
         return
     if kind == "retry":
         missing_raw = payload.get("missing")
@@ -2336,7 +2284,7 @@ def handle_channel_message(client: httpx.Client, message: dict[str, Any]) -> Non
     if not parsed:
         return
     kind, payload = parsed
-    handle_direct_control(client, kind, payload)
+    handle_channel_control(client, kind, payload)
 
 
 def handle_private_message(client: httpx.Client, message: dict[str, Any]) -> None:
@@ -2437,75 +2385,12 @@ def save_offset(offset: int) -> None:
     set_meta("offset", str(offset))
 
 
-def make_control_handler() -> type[BaseHTTPRequestHandler]:
-    class ControlHandler(BaseHTTPRequestHandler):
-        server_version = "dl-over-bale-sender/1.0"
-
-        def log_message(self, format: str, *args: Any) -> None:
-            log.info("Sender control HTTP: " + format, *args)
-
-        def _json_response(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
-            body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def do_GET(self) -> None:
-            if self.path != "/healthz":
-                self._json_response(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
-                return
-            self._json_response(HTTPStatus.OK, {"ok": True})
-
-        def do_POST(self) -> None:
-            if self.path != "/control":
-                self._json_response(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
-                return
-            if self.headers.get("X-Ingest-Token", "").strip() != SENDER_CONTROL_TOKEN:
-                self._json_response(HTTPStatus.FORBIDDEN, {"ok": False, "error": "forbidden"})
-                return
-            try:
-                content_length = int(self.headers.get("Content-Length", "0"))
-                body = self.rfile.read(content_length).decode("utf-8")
-                data = json.loads(body)
-            except Exception:
-                self._json_response(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid json"})
-                return
-            kind = str(data.get("kind") or "").strip()
-            payload = data.get("payload")
-            if kind not in {"retry", "done", "fail"} or not isinstance(payload, dict):
-                self._json_response(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid control payload"})
-                return
-            with httpx.Client() as client:
-                handle_direct_control(client, kind, payload)
-            self._json_response(HTTPStatus.ACCEPTED, {"ok": True})
-
-    return ControlHandler
-
-
-def start_control_server() -> None:
-    global sender_control_started
-    if sender_control_started:
-        return
-    sender_control_started = True
-
-    def serve() -> None:
-        server = ThreadingHTTPServer((SENDER_CONTROL_BIND, SENDER_CONTROL_PORT), make_control_handler())
-        log.info("Listening for receiver control callbacks on %s:%s", SENDER_CONTROL_BIND, SENDER_CONTROL_PORT)
-        server.serve_forever()
-
-    thread = threading.Thread(target=serve, name="sender-control-server", daemon=True)
-    thread.start()
-
-
 def poll_forever() -> None:
     ensure_prerequisites()
     init_db()
     start_workers()
     start_completion_watchdog()
     start_chunk_message_cleanup_worker()
-    start_control_server()
     for request_id in list_requeueable_request_ids():
         try:
             enqueue_request(request_id)
@@ -2521,7 +2406,7 @@ def poll_forever() -> None:
 
         while True:
             try:
-                params: dict[str, Any] = {"timeout": POLL_TIMEOUT, "allowed_updates": '["message"]'}
+                params: dict[str, Any] = {"timeout": POLL_TIMEOUT, "allowed_updates": '["message","channel_post"]'}
                 if offset is not None:
                     params["offset"] = offset
                 response = client.get(f"{BALE_API}/getUpdates", params=params, timeout=POLL_TIMEOUT + 5)
@@ -2529,7 +2414,7 @@ def poll_forever() -> None:
                 updates = response.json().get("result", [])
                 for update in updates:
                     next_offset = int(update["update_id"]) + 1
-                    message = update.get("message")
+                    message = update.get("message") or update.get("channel_post")
                     if not isinstance(message, dict):
                         offset = next_offset
                         save_offset(offset)
@@ -2540,6 +2425,10 @@ def poll_forever() -> None:
                         offset = next_offset
                         save_offset(offset)
                         handle_private_message(client, message)
+                    elif chat_matches_config(chat, CHANNEL_UPDATES_CHAT_ID):
+                        offset = next_offset
+                        save_offset(offset)
+                        handle_channel_message(client, message)
                     else:
                         offset = next_offset
                         save_offset(offset)
