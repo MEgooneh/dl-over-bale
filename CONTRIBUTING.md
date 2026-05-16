@@ -30,7 +30,6 @@ docker compose --env-file .env up -d --build
 ## Project Layout
 
 - `src/dl_over_bale/`: application package
-- `sender.py`, `receiver.py`: checkout-friendly compatibility wrappers
 - `deploy/`: deployment assets baked into Docker images
 
 ## Dependency Policy
