@@ -18,7 +18,7 @@ RUN if [ -n "$APT_MIRROR" ]; then \
     fi \
     && apt-get $APT_FLAGS update \
     && apt-get install -y --no-install-recommends ca-certificates curl p7zip-full \
-    && curl --proto '=https' --tlsv1.2 -LsSf "https://releases.astral.sh/github/uv/releases/download/${UV_VERSION}/uv-installer.sh" | env UV_INSTALL_DIR=/usr/local/bin sh \
+    && python -m pip install --no-cache-dir "uv==${UV_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock README.md .python-version /app/
