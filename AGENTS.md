@@ -39,9 +39,9 @@ docker compose --env-file .env up -d --build
 
 ## Project Layout
 
-- `src/dl_over_bale/`: application package
-- `src/dl_over_bale/sender.py`: sender bot and upload workflow
-- `src/dl_over_bale/receiver.py`: receiver bot and public download workflow
+- `src/`: top-level Python modules
+- `src/sender.py`: sender bot and upload workflow
+- `src/receiver.py`: receiver bot and public download workflow
 - `deploy/`: deployment assets baked into Docker images
 - `.env.example`: documented environment variables
 

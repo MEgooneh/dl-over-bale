@@ -32,10 +32,10 @@ sender = [
 ]
 
 [project.scripts]
-dl-over-bale-sender = "dl_over_bale.sender:poll_forever"
-dl-over-bale-receiver = "dl_over_bale.receiver:poll_forever"
-dl-over-bale-text-sender = "dl_over_bale.text_sender:main"
-dl-over-bale-text-receiver = "dl_over_bale.text_receiver:main"
+dl-over-bale-sender = "sender:poll_forever"
+dl-over-bale-receiver = "receiver:poll_forever"
+dl-over-bale-text-sender = "text_sender:main"
+dl-over-bale-text-receiver = "text_receiver:main"
 
 [dependency-groups]
 dev = [
@@ -56,7 +56,13 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/dl_over_bale"]
+only-include = [
+  "src/receiver.py",
+  "src/sender.py",
+  "src/text_receiver.py",
+  "src/text_sender.py",
+]
+sources = ["src"]
 
 [tool.hatch.metadata]
 allow-direct-references = true

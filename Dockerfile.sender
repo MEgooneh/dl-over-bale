@@ -47,4 +47,4 @@ RUN if [ -n "$APT_MIRROR" ]; then \
 COPY --from=builder /app/.venv /app/.venv
 COPY src /app/src
 
-ENTRYPOINT ["python", "-m", "dl_over_bale.sender"]
+ENTRYPOINT ["python", "-m", "sender"]

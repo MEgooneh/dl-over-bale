@@ -2,7 +2,7 @@
 
 Move files through Bale with:
 
-- `sender`: downloads the file and uploads parts to a Bale channel
+- `sender`: downloads the file with [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) and uploads parts to a Bale channel
 - `receiver`: reads the same Bale channel, rebuilds the file, and serves the final download link
 
 ## Setup
@@ -16,7 +16,7 @@ You need:
 
 Recommended host layout:
 
-- Run `sender` outside Iran so it can reach international download sources more reliably.
+- Run `sender` outside Iran; this is required for accessing international download sources.
 - Run `receiver` inside Iran so users get the final download link from an Iran-based server.
 
 For both bots:
@@ -80,6 +80,8 @@ Optional network and proxy settings:
 - `YTDLP_COOKIE_TEXT_B64`: base64-encoded cookie file content.
 - `YTDLP_COOKIES_FROM_BROWSER`: browser cookie import setting for `yt-dlp`.
 - `YTDLP_EXTRA_OPTS_JSON`: extra `yt-dlp` options as JSON.
+
+For cookie setup details, see yt-dlp's ["How do I pass cookies to yt-dlp?"](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp) documentation.
 
 Optional runtime tuning:
 
