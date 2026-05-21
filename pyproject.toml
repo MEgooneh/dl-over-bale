@@ -34,8 +34,6 @@ sender = [
 [project.scripts]
 dl-over-bale-sender = "sender:poll_forever"
 dl-over-bale-receiver = "receiver:poll_forever"
-dl-over-bale-text-sender = "text_sender:main"
-dl-over-bale-text-receiver = "text_receiver:main"
 
 [dependency-groups]
 dev = [
@@ -59,8 +57,6 @@ indent-style = "space"
 only-include = [
   "src/receiver.py",
   "src/sender.py",
-  "src/text_receiver.py",
-  "src/text_sender.py",
 ]
 sources = ["src"]
 

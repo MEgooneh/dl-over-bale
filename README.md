@@ -104,13 +104,6 @@ Optional runtime tuning:
 - `STATS_ADMIN_USERNAMES`: usernames allowed to use sender stats commands.
 - `STATS_ADMIN_USER_IDS`: user ids allowed to use sender stats commands.
 
-Helper-script only:
-
-- `BOT_TOKEN`: bot token used by the low-level helper scripts.
-- `TARGET_CHAT_ID`: target chat for `dl-over-bale-text-sender`.
-- `SOURCE_CHAT_ID`: source chat filter for `dl-over-bale-text-receiver`.
-- `MESSAGE_TEXT`: custom text for the helper sender script.
-
 The tested sender defaults are:
 
 - `TRANSFER_CHUNK_SIZE=12582912`
