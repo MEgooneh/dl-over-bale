@@ -42,6 +42,7 @@ Sender host:
 - `SENDER_BOT_TOKEN`: token of the sender bot that users message directly.
 - `ALLOWED_USERNAMES`: comma-separated Bale usernames allowed to use the sender bot.
 - `ALLOWED_USER_IDS`: comma-separated Bale user ids allowed to use the sender bot.
+- `PUBLIC_DOWNLOAD_BASE_URL`: optional fallback used to expand path-only receiver completion messages.
 
 Receiver host:
 

@@ -4,6 +4,7 @@ limit_conn_zone $binary_remote_addr zone=download_conn_per_ip:10m;
 server {
     listen ${NGINX_PORT};
     server_name _;
+    server_tokens off;
 
     access_log /var/log/nginx/access.log;
     error_log /var/log/nginx/error.log warn;
@@ -13,7 +14,9 @@ server {
     tcp_nopush on;
     keepalive_timeout 30;
     client_body_timeout 15;
+    client_max_body_size 1m;
     send_timeout 300;
+    reset_timedout_connection on;
 
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
@@ -41,6 +44,9 @@ server {
 
         limit_req zone=download_per_ip burst=${DOWNLOAD_RATE_LIMIT_BURST} nodelay;
         limit_conn download_conn_per_ip ${DOWNLOAD_RATE_LIMIT_CONNECTIONS};
+        limit_except GET {
+            deny all;
+        }
 
         alias /srv/downloads/;
         disable_symlinks if_not_owner from=/srv/downloads;
@@ -48,5 +54,7 @@ server {
 
         add_header Accept-Ranges "bytes" always;
         add_header Cache-Control "private, max-age=300" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
     }
 }

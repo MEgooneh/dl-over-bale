@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
 import yt_dlp
@@ -95,6 +95,7 @@ DEFAULT_YTDLP_COOKIE_FILE = Path("/run/secrets/ytdlp.cookies.txt")
 INLINE_COOKIE_PATH = Path("/tmp/dl-over-bale-ytdlp-cookies.txt")
 DOWNLOAD_LINK_TTL_SECONDS = max(60, int(os.environ.get("DOWNLOAD_LINK_TTL_SECONDS", "10800")))
 URL_RESPONSE_PASSWORD = os.environ.get("URL_RESPONSE_PASSWORD", "").strip()
+PUBLIC_DOWNLOAD_BASE_URL = os.environ.get("PUBLIC_DOWNLOAD_BASE_URL", "").rstrip("/")
 YTDLP_FORMAT_CANDIDATES = (
     "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
     "bestvideo+bestaudio/best",
@@ -2058,6 +2059,24 @@ def format_completion_message(final_location: str, backend: str) -> str:
     return final_location
 
 
+def absolute_download_location(payload: dict[str, Any]) -> str:
+    for key in ("sealed_location", "url"):
+        value = str(payload.get(key) or "").strip()
+        if value.startswith(("http://", "https://")):
+            return value
+
+    path = str(payload.get("path") or payload.get("sealed_location") or payload.get("url") or "").strip()
+    if not path:
+        return ""
+    if path.startswith(("http://", "https://")):
+        return path
+
+    base_url = str(payload.get("base_url") or PUBLIC_DOWNLOAD_BASE_URL or "").strip().rstrip("/")
+    if not base_url:
+        return path
+    return urljoin(f"{base_url}/", path.lstrip("/"))
+
+
 def send_completion_message(client: httpx.Client, request_id: str, final_location: str, backend: str) -> None:
     record = get_request_record(request_id)
     if not record:
@@ -2261,7 +2280,7 @@ def handle_channel_control(client: httpx.Client, kind: str, payload: dict[str, A
             schedule_missing_part_recovery(request_id, missing_parts)
         return
     if kind == "done":
-        final_location = str(payload.get("sealed_location") or payload.get("path") or payload.get("url") or "").strip()
+        final_location = absolute_download_location(payload)
         backend = str(payload.get("backend") or "").strip()
         if final_location:
             update_request_status(request_id, status="completed", final_url=final_location)

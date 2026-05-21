@@ -223,11 +223,16 @@ def build_secure_link_token(uri: str, expires: int) -> str:
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
-def public_disk_url(relative_path: Path) -> str:
+def public_disk_uri(relative_path: Path) -> str:
     uri = f"/files/{quote(relative_path.as_posix(), safe='/')}"
     expires = int(time.time()) + DOWNLOAD_LINK_TTL_SECONDS
     token = build_secure_link_token(uri, expires)
-    return f"{PUBLIC_DOWNLOAD_BASE_URL}{uri}?md5={token}&expires={expires}"
+    return f"{uri}?md5={token}&expires={expires}"
+
+
+def public_disk_url(relative_path: Path) -> str:
+    uri = public_disk_uri(relative_path)
+    return f"{PUBLIC_DOWNLOAD_BASE_URL}{uri}"
 
 
 def xor_keystream(data: bytes, key: bytes, nonce: bytes) -> bytes:
@@ -605,10 +610,22 @@ def process_completed_job(request_id: str, state: dict[str, Any]) -> None:
             str(metadata.get("storage_relative_path") or metadata.get("object_key") or ""),
             str(metadata.get("payload_file_name") or final_path.name),
         )
-        location = public_disk_url(relative_path)
+        path = public_disk_uri(relative_path)
+        location = f"{PUBLIC_DOWNLOAD_BASE_URL}{path}"
         backend = "disk"
         with httpx.Client() as client:
-            send_channel_control(client, CONTROL_DONE_PREFIX, {"request_id": request_id, "backend": backend, "url": location})
+            send_channel_control(
+                client,
+                CONTROL_DONE_PREFIX,
+                {
+                    "request_id": request_id,
+                    "backend": backend,
+                    "base_url": PUBLIC_DOWNLOAD_BASE_URL,
+                    "path": path,
+                    "sealed_location": location,
+                    "url": location,
+                },
+            )
         with state_lock:
             state.setdefault("completed_jobs", {})[request_id] = {
                 "completed_at": int(time.time()),

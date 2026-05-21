@@ -13,6 +13,12 @@ fi
   printf '%s\n' 'real_ip_header X-Forwarded-For;'
   printf '%s\n' 'real_ip_recursive on;'
   printf '%s\n' "$TRUSTED_PROXY_CIDRS" | tr ', ' '\n\n' | sed '/^$/d' | while IFS= read -r cidr; do
+    case "$cidr" in
+      *[!0-9A-Fa-f:./]*)
+        printf 'Invalid TRUSTED_PROXY_CIDRS entry: %s\n' "$cidr" >&2
+        exit 1
+        ;;
+    esac
     printf 'set_real_ip_from %s;\n' "$cidr"
   done
 } >"$OUTPUT_PATH"
