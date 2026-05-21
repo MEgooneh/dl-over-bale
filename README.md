@@ -2,7 +2,7 @@
 
 Move files through Bale with:
 
-- `sender`: downloads the file with [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) and uploads parts to a Bale channel
+- `sender`: downloads direct files or [`yt-dlp`](https://github.com/yt-dlp/yt-dlp)-supported URLs, then uploads parts to a Bale channel
 - `receiver`: reads the same Bale channel, rebuilds the file, and serves the final download link
 
 ## Setup
