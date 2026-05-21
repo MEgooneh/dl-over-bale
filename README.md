@@ -14,7 +14,7 @@ You need:
   - one sender bot
   - one receiver bot
 
-Recommended host layout:
+Host layout:
 
 - Run `sender` outside Iran; this is required for accessing international download sources.
 - Run `receiver` inside Iran so users get the final download link from an Iran-based server.
