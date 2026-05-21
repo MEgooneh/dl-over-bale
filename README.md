@@ -106,12 +106,77 @@ Optional runtime tuning:
 - `STATS_ADMIN_USERNAMES`: usernames allowed to use sender stats commands.
 - `STATS_ADMIN_USER_IDS`: user ids allowed to use sender stats commands.
 
+Optional image settings:
+
+- `SENDER_IMAGE`: sender container image. Defaults to `dl-over-bale-sender:local`.
+- `RECEIVER_IMAGE`: receiver container image. Defaults to `dl-over-bale-receiver:local`.
+- `DOWNLOAD_PROXY_IMAGE`: nginx download proxy image. Defaults to `dl-over-bale-nginx:local`.
+- `DOWNLOAD_CLEANER_IMAGE`: download cleanup image. Defaults to `dl-over-bale-cleaner:local`.
+
 The tested sender defaults are:
 
 - `TRANSFER_CHUNK_SIZE=12582912`
 - `UPLOAD_RETRIES=8`
 
 ## Deploy
+
+### Use GHCR images
+
+GitHub Actions publishes these images to GHCR on every push to `main`:
+
+- `ghcr.io/megooneh/dl-over-bale-sender`
+- `ghcr.io/megooneh/dl-over-bale-receiver`
+- `ghcr.io/megooneh/dl-over-bale-nginx`
+- `ghcr.io/megooneh/dl-over-bale-cleaner`
+
+Use `latest` for the newest `main`, or use a short commit SHA tag for a pinned deploy.
+
+Add these to `.env`:
+
+```env
+SENDER_IMAGE=ghcr.io/megooneh/dl-over-bale-sender:latest
+RECEIVER_IMAGE=ghcr.io/megooneh/dl-over-bale-receiver:latest
+DOWNLOAD_PROXY_IMAGE=ghcr.io/megooneh/dl-over-bale-nginx:latest
+DOWNLOAD_CLEANER_IMAGE=ghcr.io/megooneh/dl-over-bale-cleaner:latest
+```
+
+On the receiver host inside Iran:
+
+```bash
+docker compose --env-file .env -f docker-compose.receiver.yml pull
+docker compose --env-file .env -f docker-compose.receiver.yml up -d
+```
+
+On the sender host outside Iran:
+
+```bash
+docker compose --env-file .env -f docker-compose.sender.yml pull
+docker compose --env-file .env -f docker-compose.sender.yml up -d
+```
+
+If the receiver host cannot pull GHCR directly, pull the images on another machine and copy them over SSH:
+
+```bash
+docker pull ghcr.io/megooneh/dl-over-bale-receiver:latest
+docker pull ghcr.io/megooneh/dl-over-bale-nginx:latest
+docker pull ghcr.io/megooneh/dl-over-bale-cleaner:latest
+docker save \
+  ghcr.io/megooneh/dl-over-bale-receiver:latest \
+  ghcr.io/megooneh/dl-over-bale-nginx:latest \
+  ghcr.io/megooneh/dl-over-bale-cleaner:latest \
+  | gzip \
+  | ssh root@receiver-host 'gunzip | docker load'
+```
+
+Then run the receiver compose file on that host:
+
+```bash
+docker compose --env-file .env -f docker-compose.receiver.yml up -d
+```
+
+### Build locally
+
+If you want to build from source on each host instead of using GHCR, leave the image variables unset and run with `--build`.
 
 On the receiver host:
 
@@ -123,31 +188,6 @@ On the sender host:
 
 ```bash
 docker compose --env-file .env -f docker-compose.sender.yml up -d --build
-```
-
-If the receiver host inside Iran cannot pull Docker Hub base images reliably, build the receiver-side images on another machine and copy them over SSH:
-
-```bash
-docker build -f Dockerfile -t dl-over-bale-receiver:local .
-docker build -f deploy/nginx/Dockerfile -t dl-over-bale-nginx:local .
-docker build -f deploy/downloads/Dockerfile -t dl-over-bale-cleaner:local .
-docker save dl-over-bale-receiver:local dl-over-bale-nginx:local dl-over-bale-cleaner:local \
-  | gzip \
-  | ssh root@receiver-host 'gunzip | docker load'
-```
-
-Then run the receiver compose file on that host without `--build`:
-
-```bash
-docker compose --env-file .env -f docker-compose.receiver.yml up -d
-```
-
-On a sender host that can pull GHCR, you can also use a published sender image instead of building there:
-
-```bash
-docker pull ghcr.io/megooneh/dl-over-bale-sender:<tag>
-SENDER_IMAGE=ghcr.io/megooneh/dl-over-bale-sender:<tag> \
-  docker compose --env-file .env -f docker-compose.sender.yml up -d
 ```
 
 ## Use
