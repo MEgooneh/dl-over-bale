@@ -5,6 +5,8 @@ Move files through Bale with:
 - `sender`: downloads direct files or [`yt-dlp`](https://github.com/yt-dlp/yt-dlp)-supported URLs, then uploads parts to a Bale channel
 - `receiver`: reads the same Bale channel, rebuilds the file, and serves the final download link
 
+For each URL, `sender` first tries a direct file download. If the URL is not a directly downloadable file, it falls back to `yt-dlp`.
+
 ## Setup
 
 You need:

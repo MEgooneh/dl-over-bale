@@ -111,9 +111,9 @@ CONTROL_FAIL_PREFIX = "BALE_FAIL "
 CONTROL_UPLOAD_DONE_PREFIX = "BALE_UPLOAD_DONE "
 CONTROL_RETRY_PREFIX = "BALE_RETRY "
 PART_CAPTION_PREFIX = "~"
-STEP_DOWNLOAD_TEXT = "Step [1/2]..."
-STEP_UPLOAD_TEXT = "Step [2/2]..."
-STEP_TRANSFER_TEXT = "Step [2/2]..."
+STEP_DOWNLOAD_TEXT = "Step [1/3]..."
+STEP_UPLOAD_TEXT = "Step [2/3]..."
+STEP_TRANSFER_TEXT = "Step [3/3]..."
 DEFAULT_VIDEO_HEIGHT = 480
 QUALITY_SELECTION_RE = re.compile(r"(?<!\d)(360|480|720|1080|1440|2160)\s*p?\b", re.IGNORECASE)
 QUALITY_OVERRIDE_LOOKBACK_SECONDS = max(60, int(os.environ.get("QUALITY_OVERRIDE_LOOKBACK_SECONDS", "900")))
@@ -2168,6 +2168,7 @@ def process_request(request_id: str) -> None:
                         record["source_url"],
                         ytdlp_dir,
                         max_download_size=max_download_size,
+                        requested_video_height=requested_video_height or DEFAULT_VIDEO_HEIGHT,
                     )
                     manifest = upload_local_file_to_channel(
                         client,
@@ -2356,28 +2357,7 @@ def handle_private_message(client: httpx.Client, message: dict[str, Any]) -> Non
     request_id = f"req-{int(time.time())}-{secrets.token_hex(4)}"
     request_kind = ""
     prompt_message_id: int | None = None
-    selected_video_height = 0
-    if maybe_video_page_url(normalized_url):
-        try:
-            selected_video_height = max(DEFAULT_VIDEO_HEIGHT, requested_video_height or DEFAULT_VIDEO_HEIGHT)
-            probe = probe_video_metadata(
-                normalized_url,
-                selected_height=selected_video_height,
-            )
-            if probe.is_video:
-                request_kind = "video"
-                prompt = send_message(
-                    client,
-                    chat_id,
-                    format_video_prompt(probe),
-                    reply_to_message_id=message_id,
-                )
-                prompt_message_id = int(prompt.get("message_id") or 0) or None
-            else:
-                selected_video_height = 0
-        except Exception as exc:
-            send_message(client, chat_id, format_user_error(exc), reply_to_message_id=message_id)
-            return
+    selected_video_height = max(DEFAULT_VIDEO_HEIGHT, requested_video_height) if requested_video_height else 0
     create_request_record(
         request_id=request_id,
         chat_id=chat_id,
