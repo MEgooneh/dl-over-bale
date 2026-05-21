@@ -126,7 +126,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27,<1.0" },
-    { name = "yt-dlp", extras = ["default"], marker = "extra == 'sender'", url = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.tar.gz" },
+    { name = "yt-dlp", extras = ["default"], marker = "extra == 'sender'" },
 ]
 provides-extras = ["sender"]
 
@@ -296,13 +296,16 @@ wheels = [
 
 [[package]]
 name = "yt-dlp"
-version = "2026.5.5.233942"
-source = { url = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.tar.gz" }
-sdist = { hash = "sha256:7010434c6ca978e5794e9df1563daa87b8a3af9465009ecfd231a404043d2298" }
+version = "2026.3.17"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/8b/34/7c6b4e3f89cb6416d2cd7ab6dab141a1df97ab0fb22d15816db2c92148c9/yt_dlp-2026.3.17.tar.gz", hash = "sha256:ba7aa31d533f1ffccfe70e421596d7ca8ff0bf1398dc6bb658b7d9dec057d2c9", size = 3119221, upload-time = "2026-03-17T23:43:00.244Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/13/5093bcb954878e50f7217fd2ab94282b53934022e4e4a03265582da83bf5/yt_dlp-2026.3.17-py3-none-any.whl", hash = "sha256:32992db94303a8a5d211a183f2174834fe7f8c29d83ed2e7a324eae97a8f26d8", size = 3315134, upload-time = "2026-03-17T23:42:57.863Z" },
+]
 
 [package.optional-dependencies]
 default = [
-    { name = "brotli", marker = "implementation_name == 'cpython' and sys_platform != 'ios'" },
+    { name = "brotli", marker = "implementation_name == 'cpython'" },
     { name = "brotlicffi", marker = "implementation_name != 'cpython'" },
     { name = "certifi" },
     { name = "mutagen" },
@@ -312,49 +315,6 @@ default = [
     { name = "websockets" },
     { name = "yt-dlp-ejs" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "brotli", marker = "implementation_name == 'cpython' and sys_platform != 'ios' and extra == 'default'" },
-    { name = "brotli", marker = "implementation_name == 'cpython' and sys_platform != 'ios' and extra == 'pin'", specifier = "==1.2.0" },
-    { name = "brotlicffi", marker = "implementation_name != 'cpython' and extra == 'default'" },
-    { name = "brotlicffi", marker = "implementation_name != 'cpython' and extra == 'pin'", specifier = "==1.2.0.1" },
-    { name = "certifi", marker = "implementation_name == 'cpython' and extra == 'pin-curl-cffi'", specifier = "==2026.4.22" },
-    { name = "certifi", marker = "extra == 'default'" },
-    { name = "certifi", marker = "extra == 'pin'", specifier = "==2026.4.22" },
-    { name = "cffi", marker = "platform_python_implementation != 'PyPy' and extra == 'pin-secretstorage'", specifier = "==2.0.0" },
-    { name = "cffi", marker = "implementation_name == 'cpython' and extra == 'pin-curl-cffi'", specifier = "==2.0.0" },
-    { name = "charset-normalizer", marker = "extra == 'pin'", specifier = "==3.4.7" },
-    { name = "cryptography", marker = "extra == 'pin-secretstorage'", specifier = "==47.0.0" },
-    { name = "curl-cffi", marker = "implementation_name == 'cpython' and extra == 'curl-cffi'", specifier = ">=0.5.10,!=0.6.*,!=0.7.*,!=0.8.*,!=0.9.*,<0.16" },
-    { name = "curl-cffi", marker = "implementation_name == 'cpython' and extra == 'pin-curl-cffi'", specifier = "==0.15.0" },
-    { name = "deno", marker = "extra == 'deno'", specifier = ">=2.6.6" },
-    { name = "deno", marker = "extra == 'pin-deno'", specifier = "==2.7.14" },
-    { name = "idna", marker = "extra == 'pin'", specifier = "==3.13" },
-    { name = "jeepney", marker = "extra == 'pin-secretstorage'", specifier = "==0.9.0" },
-    { name = "markdown-it-py", marker = "implementation_name == 'cpython' and extra == 'pin-curl-cffi'", specifier = "==4.0.0" },
-    { name = "mdurl", marker = "implementation_name == 'cpython' and extra == 'pin-curl-cffi'", specifier = "==0.1.2" },
-    { name = "mutagen", marker = "extra == 'default'" },
-    { name = "mutagen", marker = "extra == 'pin'", specifier = "==1.47.0" },
-    { name = "pycparser", marker = "implementation_name != 'PyPy' and platform_python_implementation != 'PyPy' and extra == 'pin-secretstorage'", specifier = "==3.0" },
-    { name = "pycparser", marker = "implementation_name == 'cpython' and extra == 'pin-curl-cffi'", specifier = "==3.0" },
-    { name = "pycryptodomex", marker = "extra == 'default'" },
-    { name = "pycryptodomex", marker = "extra == 'pin'", specifier = "==3.23.0" },
-    { name = "pygments", marker = "implementation_name == 'cpython' and extra == 'pin-curl-cffi'", specifier = "==2.20.0" },
-    { name = "requests", marker = "extra == 'default'", specifier = ">=2.32.2,<3" },
-    { name = "requests", marker = "extra == 'pin'", specifier = "==2.33.1" },
-    { name = "rich", marker = "implementation_name == 'cpython' and extra == 'pin-curl-cffi'", specifier = "==15.0.0" },
-    { name = "secretstorage", marker = "extra == 'pin-secretstorage'", specifier = "==3.5.0" },
-    { name = "secretstorage", marker = "extra == 'secretstorage'" },
-    { name = "typing-extensions", marker = "python_full_version < '3.11' and extra == 'pin-secretstorage'", specifier = "==4.15.0" },
-    { name = "urllib3", marker = "extra == 'default'", specifier = ">=2.0.2,<3" },
-    { name = "urllib3", marker = "extra == 'pin'", specifier = "==2.6.3" },
-    { name = "websockets", marker = "extra == 'default'", specifier = ">=13.0" },
-    { name = "websockets", marker = "extra == 'pin'", specifier = "==16.0" },
-    { name = "yt-dlp-ejs", marker = "extra == 'default'", specifier = "==0.8.0" },
-    { name = "yt-dlp-ejs", marker = "extra == 'pin'", specifier = "==0.8.0" },
-]
-provides-extras = ["curl-cffi", "default", "deno", "pin", "pin-curl-cffi", "pin-deno", "pin-secretstorage", "secretstorage"]
 
 [[package]]
 name = "yt-dlp-ejs"

@@ -28,7 +28,7 @@ dependencies = [
 
 [project.optional-dependencies]
 sender = [
-  "yt-dlp[default] @ https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.tar.gz",
+  "yt-dlp[default]",
 ]
 
 [project.scripts]
