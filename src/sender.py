@@ -1012,6 +1012,17 @@ def is_direct_downloadable(url: str, headers: httpx.Headers) -> bool:
     return not content_type.startswith("text/")
 
 
+def probe_direct_downloadable_url(url: str) -> bool:
+    headers = {"User-Agent": USER_AGENT}
+    try:
+        with httpx.Client(timeout=min(REQUEST_TIMEOUT, 15.0), follow_redirects=True, headers=headers) as client:
+            response = client.head(url)
+            response.raise_for_status()
+            return is_direct_downloadable(str(response.url), response.headers)
+    except Exception:
+        return False
+
+
 def parse_browser_spec(spec: str) -> tuple[str, ...]:
     browser_part, profile_part, container = spec, None, None
     if "::" in spec:
@@ -2133,9 +2144,19 @@ def process_request(request_id: str) -> None:
             max_download_size = request_download_limit_bytes(str(record.get("username") or ""))
             delete_request_prompt(client, request_id)
             update_progress(client, request_id, STEP_DOWNLOAD_TEXT)
-            request_kind = str(record.get("request_kind") or "").strip().lower()
             requested_video_height = int(record.get("requested_video_height") or 0)
-            if request_kind == "video":
+            try:
+                manifest = stream_download_to_channel(
+                    client,
+                    request_id,
+                    record["source_url"],
+                    download_dir,
+                    stage_dir,
+                    max_download_size=max_download_size,
+                )
+            except Exception as exc:
+                if not can_retry_with_ytdlp(exc):
+                    raise
                 media_path, final_url = download_with_ytdlp(
                     record["source_url"],
                     ytdlp_dir,
@@ -2151,34 +2172,6 @@ def process_request(request_id: str) -> None:
                     download_dir,
                     stage_dir,
                 )
-            else:
-                try:
-                    manifest = stream_download_to_channel(
-                        client,
-                        request_id,
-                        record["source_url"],
-                        download_dir,
-                        stage_dir,
-                        max_download_size=max_download_size,
-                    )
-                except Exception as exc:
-                    if not can_retry_with_ytdlp(exc):
-                        raise
-                    media_path, final_url = download_with_ytdlp(
-                        record["source_url"],
-                        ytdlp_dir,
-                        max_download_size=max_download_size,
-                        requested_video_height=requested_video_height or DEFAULT_VIDEO_HEIGHT,
-                    )
-                    manifest = upload_local_file_to_channel(
-                        client,
-                        request_id,
-                        record["source_url"],
-                        final_url,
-                        media_path,
-                        download_dir,
-                        stage_dir,
-                    )
             update_request_status(request_id, status="uploaded")
             update_request_event(request_id, status="uploaded", size_bytes=manifest.file_size)
             notify_upload_complete(client, manifest)
@@ -2358,6 +2351,25 @@ def handle_private_message(client: httpx.Client, message: dict[str, Any]) -> Non
     request_kind = ""
     prompt_message_id: int | None = None
     selected_video_height = max(DEFAULT_VIDEO_HEIGHT, requested_video_height) if requested_video_height else 0
+    if maybe_video_page_url(normalized_url) and not probe_direct_downloadable_url(normalized_url):
+        probe_height = selected_video_height or DEFAULT_VIDEO_HEIGHT
+        try:
+            probe = probe_video_metadata(
+                normalized_url,
+                selected_height=probe_height,
+            )
+            if probe.is_video:
+                request_kind = "video"
+                selected_video_height = probe_height
+                prompt = send_message(
+                    client,
+                    chat_id,
+                    format_video_prompt(probe),
+                    reply_to_message_id=message_id,
+                )
+                prompt_message_id = int(prompt.get("message_id") or 0) or None
+        except Exception as exc:
+            log.info("Skipping yt-dlp prompt probe for %s: %s", normalized_url, exc)
     create_request_record(
         request_id=request_id,
         chat_id=chat_id,
