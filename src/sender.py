@@ -59,6 +59,7 @@ DEFAULT_REQUEST_DOWNLOAD_LIMIT_BYTES = int(
     )
 )
 TRANSFER_CHUNK_SIZE = max(1, int(os.environ.get("TRANSFER_CHUNK_SIZE", str(12 * 1024 * 1024))))
+TRANSFER_READ_CHUNK_SIZE = min(1024 * 1024, TRANSFER_CHUNK_SIZE)
 WORKER_COUNT = max(1, int(os.environ.get("WORKER_COUNT", "8")))
 MAX_QUEUE_SIZE = max(1, int(os.environ.get("MAX_QUEUE_SIZE", "1000")))
 COMPLETION_WATCHDOG_INTERVAL_SECONDS = max(10, int(os.environ.get("COMPLETION_WATCHDOG_INTERVAL_SECONDS", "30")))
@@ -1700,7 +1701,7 @@ def upload_local_file_to_channel(
         chunk_digest = hashlib.sha256()
 
     with payload_path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+        for chunk in iter(lambda: source.read(TRANSFER_READ_CHUNK_SIZE), b""):
             if not chunk:
                 continue
             overall_digest.update(chunk)
@@ -1826,7 +1827,7 @@ def stream_download_to_channel(
                 chunk_size = 0
                 chunk_digest = hashlib.sha256()
 
-            for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+            for chunk in response.iter_bytes(chunk_size=TRANSFER_READ_CHUNK_SIZE):
                 if not chunk:
                     continue
                 total_bytes += len(chunk)
