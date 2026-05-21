@@ -60,6 +60,13 @@ MISSING_PART_RETRIES = max(1, int(os.environ.get("MISSING_PART_RETRIES", "5")))
 download_cleanup_started = False
 
 
+def sanitize_error_text(value: object) -> str:
+    text = str(value).strip()
+    if BOT_TOKEN:
+        text = text.replace(BOT_TOKEN, "<bot-token>")
+    return text
+
+
 def ensure_prerequisites() -> None:
     if shutil.which("7z") is None:
         raise RuntimeError("7z is required in the container. Install p7zip-full.")
@@ -645,7 +652,7 @@ def process_completed_job(request_id: str, state: dict[str, Any]) -> None:
         shutil.rmtree(job_dir, ignore_errors=True)
         log.info("Completed request %s -> %s", request_id, location)
     except Exception as exc:
-        error_text = str(exc).strip() or exc.__class__.__name__
+        error_text = sanitize_error_text(exc) or exc.__class__.__name__
         log.exception("Failed processing request %s", request_id)
         with httpx.Client() as client:
             send_channel_control(client, CONTROL_FAIL_PREFIX, {"request_id": request_id, "error": error_text})

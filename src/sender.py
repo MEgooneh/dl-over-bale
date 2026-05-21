@@ -158,6 +158,13 @@ completion_watchdog_started = False
 chunk_message_cleanup_started = False
 
 
+def sanitize_error_text(value: object) -> str:
+    text = str(value).strip()
+    if BOT_TOKEN:
+        text = text.replace(BOT_TOKEN, "<bot-token>")
+    return text
+
+
 @dataclass
 class ChunkManifest:
     request_id: str
@@ -1482,9 +1489,9 @@ def send_document(client: httpx.Client, chat_id: int | str, file_path: Path, cap
             if attempt >= UPLOAD_RETRIES:
                 break
             delay = min(90.0, 5.0 * (2 ** (attempt - 1)))
-            log.warning("Upload failed for %s: %s; retrying in %.1fs", file_name, exc, delay)
+            log.warning("Upload failed for %s: %s; retrying in %.1fs", file_name, sanitize_error_text(exc), delay)
             time.sleep(delay)
-    raise RuntimeError(f"Failed to upload {file_name}: {last_error}") from last_error
+    raise RuntimeError(f"Failed to upload {file_name}: {sanitize_error_text(last_error)}") from last_error
 
 
 def build_archive(stage_dir: Path, archive_name: str) -> Path:
@@ -2065,7 +2072,7 @@ def delete_request_prompt(client: httpx.Client, request_id: str) -> None:
 
 
 def format_user_error(exc: Exception) -> str:
-    text = str(exc).strip()
+    text = sanitize_error_text(exc)
     if not text:
         return "Failed."
     return f"Failed: {text}"
@@ -2181,8 +2188,9 @@ def process_request(request_id: str) -> None:
             upload_completed = True
         except Exception as exc:
             log.exception("Request %s failed before receiver completion", request_id)
-            update_request_status(request_id, status="failed", error_text=str(exc).strip())
-            update_request_event(request_id, status="failed", error_text=str(exc).strip(), finished=True)
+            error_text = sanitize_error_text(exc)
+            update_request_status(request_id, status="failed", error_text=error_text)
+            update_request_event(request_id, status="failed", error_text=error_text, finished=True)
             update_progress(client, request_id, format_user_error(exc))
         finally:
             if not upload_completed:

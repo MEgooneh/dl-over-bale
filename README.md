@@ -125,6 +125,31 @@ On the sender host:
 docker compose --env-file .env -f docker-compose.sender.yml up -d --build
 ```
 
+If the receiver host inside Iran cannot pull Docker Hub base images reliably, build the receiver-side images on another machine and copy them over SSH:
+
+```bash
+docker build -f Dockerfile -t dl-over-bale-receiver:local .
+docker build -f deploy/nginx/Dockerfile -t dl-over-bale-nginx:local .
+docker build -f deploy/downloads/Dockerfile -t dl-over-bale-cleaner:local .
+docker save dl-over-bale-receiver:local dl-over-bale-nginx:local dl-over-bale-cleaner:local \
+  | gzip \
+  | ssh root@receiver-host 'gunzip | docker load'
+```
+
+Then run the receiver compose file on that host without `--build`:
+
+```bash
+docker compose --env-file .env -f docker-compose.receiver.yml up -d
+```
+
+On a sender host that can pull GHCR, you can also use a published sender image instead of building there:
+
+```bash
+docker pull ghcr.io/megooneh/dl-over-bale-sender:<tag>
+SENDER_IMAGE=ghcr.io/megooneh/dl-over-bale-sender:<tag> \
+  docker compose --env-file .env -f docker-compose.sender.yml up -d
+```
+
 ## Use
 
 Send a URL to the sender bot in a private chat.

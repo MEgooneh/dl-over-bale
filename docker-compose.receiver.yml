@@ -1,5 +1,6 @@
 services:
   download-cleaner:
+    image: ${DOWNLOAD_CLEANER_IMAGE:-dl-over-bale-cleaner:local}
     build:
       context: .
       dockerfile: deploy/downloads/Dockerfile
@@ -12,6 +13,7 @@ services:
     restart: unless-stopped
 
   download-proxy:
+    image: ${DOWNLOAD_PROXY_IMAGE:-dl-over-bale-nginx:local}
     build:
       context: .
       dockerfile: deploy/nginx/Dockerfile
@@ -34,6 +36,7 @@ services:
     restart: unless-stopped
 
   receiver:
+    image: ${RECEIVER_IMAGE:-dl-over-bale-receiver:local}
     build:
       context: .
       dockerfile: Dockerfile
