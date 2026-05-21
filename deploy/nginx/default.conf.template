@@ -28,19 +28,8 @@ server {
     }
 
     location /files/ {
-        auth_basic "Protected downloads";
-        auth_basic_user_file /etc/nginx/.htpasswd;
-
-        secure_link $arg_md5,$arg_expires;
-        secure_link_md5 "$secure_link_expires$uri ${DOWNLOAD_LINK_SECRET}";
-
-        if ($secure_link = "") {
-            return 403;
-        }
-
-        if ($secure_link = "0") {
-            return 410;
-        }
+        include /etc/nginx/download-basic-auth.conf;
+        include /etc/nginx/download-signed-link.conf;
 
         limit_req zone=download_per_ip burst=${DOWNLOAD_RATE_LIMIT_BURST} nodelay;
         limit_conn download_conn_per_ip ${DOWNLOAD_RATE_LIMIT_CONNECTIONS};

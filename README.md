@@ -21,33 +21,44 @@ For both bots:
 3. Add both bots to the same channel.
 4. Make both bots channel admins.
 
-Then:
+Then create a `.env` file. For the smallest working setup, fill only:
 
-1. Copy `.env.example` to `.env` on both hosts.
-2. Fill the variables below.
+```env
+SENDER_BOT_TOKEN=
+RECEIVER_BOT_TOKEN=
+CHANNEL_CHAT_ID=
+URL_RESPONSE_PASSWORD=
+ALLOWED_USERNAMES=
+ALLOWED_USER_IDS=
+PUBLIC_DOWNLOAD_BASE_URL=http://localhost:8080
+```
+
+Set either `ALLOWED_USERNAMES` or `ALLOWED_USER_IDS` for the sender bot. The optional settings below add protection for production or shared deployments.
 
 ## Environment Variables
 
-Both hosts:
+Required on both hosts:
 
 - `CHANNEL_CHAT_ID`: Bale channel id used for file parts and control messages.
-- `ARCHIVE_PASSWORD`: password used for the split `7z` archives.
-- `DOWNLOAD_LINK_SECRET`: secret used to sign the final download URLs.
-- `URL_RESPONSE_PASSWORD`: secret used inside transport payload encryption.
-- `DOWNLOAD_BASIC_AUTH_USER`: username that protects the receiver download endpoint.
-- `DOWNLOAD_BASIC_AUTH_PASSWORD`: password that protects the receiver download endpoint.
+- `URL_RESPONSE_PASSWORD`: shared secret used to encrypt bot control messages and part captions. Keep this set and identical on sender and receiver.
 
-Sender host:
+Required on the sender host:
 
 - `SENDER_BOT_TOKEN`: token of the sender bot that users message directly.
 - `ALLOWED_USERNAMES`: comma-separated Bale usernames allowed to use the sender bot.
 - `ALLOWED_USER_IDS`: comma-separated Bale user ids allowed to use the sender bot.
 - `PUBLIC_DOWNLOAD_BASE_URL`: optional fallback used to expand path-only receiver completion messages.
 
-Receiver host:
+Required on the receiver host:
 
 - `RECEIVER_BOT_TOKEN`: token of the receiver bot that reads the Bale channel.
 - `PUBLIC_DOWNLOAD_BASE_URL`: public base URL of the receiver download endpoint.
+
+Optional protections:
+
+- `ARCHIVE_PASSWORD`: encrypts the split `7z` chunks uploaded to Bale. Leave it empty for simpler setup; set a strong shared password if channel storage or admins should not see file contents. When set, it must be at least 24 characters and include uppercase, lowercase, digit, and symbol characters.
+- `DOWNLOAD_LINK_SECRET`: signs generated download URLs and adds expiry. Leave it empty for plain stable URLs; set it to make copied links expire after `DOWNLOAD_LINK_TTL_SECONDS`.
+- `DOWNLOAD_BASIC_AUTH_USER` and `DOWNLOAD_BASIC_AUTH_PASSWORD`: add HTTP basic auth in front of downloads. Leave both empty for one-click downloads; set both if links may be forwarded or exposed.
 
 Optional network and proxy settings:
 
@@ -71,7 +82,7 @@ Optional runtime tuning:
 - `DOWNLOAD_CLEAN_INTERVAL_SECONDS`: how often the download cleanup job runs.
 - `PUBLIC_DOWNLOAD_RETENTION_SECONDS`: how long public download files are kept.
 - `PUBLIC_DOWNLOAD_CLEAN_INTERVAL_SECONDS`: how often public file cleanup runs.
-- `DOWNLOAD_LINK_TTL_SECONDS`: lifetime of a generated download link.
+- `DOWNLOAD_LINK_TTL_SECONDS`: lifetime of a generated signed download link when `DOWNLOAD_LINK_SECRET` is set.
 - `DEFAULT_REQUEST_DOWNLOAD_LIMIT_BYTES`: default max source file size per request.
 - `TRANSFER_CHUNK_SIZE`: sender chunk size before each Bale upload.
 - `UPLOAD_RETRIES`: sender upload retry count for each chunk.

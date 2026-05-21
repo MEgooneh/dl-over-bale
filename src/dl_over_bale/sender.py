@@ -40,7 +40,7 @@ def first_configured_id(raw: str) -> str:
 
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-ARCHIVE_PASSWORD = os.environ["ARCHIVE_PASSWORD"]
+ARCHIVE_PASSWORD = os.environ.get("ARCHIVE_PASSWORD", "").strip()
 
 CHANNEL_CHAT_ID = str(os.environ.get("CHANNEL_CHAT_ID", "")).strip()
 CHANNEL_TARGET_CHAT_ID = str(os.environ.get("CHANNEL_TARGET_CHAT_ID", CHANNEL_CHAT_ID)).strip()
@@ -183,7 +183,8 @@ class VideoProbe:
 def ensure_prerequisites() -> None:
     if shutil.which("7z") is None:
         raise RuntimeError("7z is required in the container. Install p7zip-full.")
-    validate_password_strength(ARCHIVE_PASSWORD)
+    if ARCHIVE_PASSWORD:
+        validate_password_strength(ARCHIVE_PASSWORD)
     if not CHANNEL_TARGET_CHAT_ID:
         raise RuntimeError("CHANNEL_CHAT_ID or CHANNEL_TARGET_CHAT_ID is required.")
     if not CHANNEL_UPDATES_CHAT_ID:
@@ -1483,9 +1484,9 @@ def build_archive(stage_dir: Path, archive_name: str) -> Path:
         "payload",
         "metadata.json",
         "-mx=0",
-        "-mhe=on",
-        f"-p{ARCHIVE_PASSWORD}",
     ]
+    if ARCHIVE_PASSWORD:
+        cmd.extend(["-mhe=on", f"-p{ARCHIVE_PASSWORD}"])
     completed = subprocess.run(cmd, cwd=stage_dir, text=True, capture_output=True, check=False)
     if completed.returncode != 0:
         raise RuntimeError(f"7z failed: {completed.stderr.strip() or completed.stdout.strip()}")
@@ -1533,7 +1534,7 @@ def encrypt_user_url(value: str) -> str:
 def encrypt_transport_payload(payload: dict[str, Any]) -> str:
     salt = secrets.token_bytes(12)
     nonce = secrets.token_bytes(12)
-    key_material = hashlib.pbkdf2_hmac("sha256", ARCHIVE_PASSWORD.encode("utf-8"), salt, 120_000, dklen=64)
+    key_material = hashlib.pbkdf2_hmac("sha256", URL_RESPONSE_PASSWORD.encode("utf-8"), salt, 120_000, dklen=64)
     enc_key = key_material[:32]
     mac_key = key_material[32:]
     plaintext = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
@@ -1555,18 +1556,23 @@ def decrypt_transport_payload(token: str) -> dict[str, Any] | None:
     nonce = blob[12:24]
     mac = blob[24:56]
     ciphertext = blob[56:]
-    key_material = hashlib.pbkdf2_hmac("sha256", ARCHIVE_PASSWORD.encode("utf-8"), salt, 120_000, dklen=64)
-    enc_key = key_material[:32]
-    mac_key = key_material[32:]
-    expected_mac = hmac.new(mac_key, b"dl-over-bale-meta-v1" + salt + nonce + ciphertext, hashlib.sha256).digest()
-    if not hmac.compare_digest(mac, expected_mac):
-        return None
-    try:
-        plaintext = xor_keystream(ciphertext, enc_key, nonce).decode("utf-8")
-        payload = json.loads(plaintext)
-    except Exception:
-        return None
-    return payload if isinstance(payload, dict) else None
+    keys = [URL_RESPONSE_PASSWORD]
+    if ARCHIVE_PASSWORD and ARCHIVE_PASSWORD != URL_RESPONSE_PASSWORD:
+        keys.append(ARCHIVE_PASSWORD)
+    for key in keys:
+        key_material = hashlib.pbkdf2_hmac("sha256", key.encode("utf-8"), salt, 120_000, dklen=64)
+        enc_key = key_material[:32]
+        mac_key = key_material[32:]
+        expected_mac = hmac.new(mac_key, b"dl-over-bale-meta-v1" + salt + nonce + ciphertext, hashlib.sha256).digest()
+        if not hmac.compare_digest(mac, expected_mac):
+            continue
+        try:
+            plaintext = xor_keystream(ciphertext, enc_key, nonce).decode("utf-8")
+            payload = json.loads(plaintext)
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+    return None
 
 
 def build_part_caption(request_id: str, part_index: int, part_total: int, volume_name: str, *, mode: str) -> str:

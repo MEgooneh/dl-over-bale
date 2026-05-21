@@ -26,7 +26,7 @@ logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(message
 log = logging.getLogger("dl-over-bale-receiver")
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-ARCHIVE_PASSWORD = os.environ["ARCHIVE_PASSWORD"]
+ARCHIVE_PASSWORD = os.environ.get("ARCHIVE_PASSWORD", "").strip()
 
 CHANNEL_CHAT_ID = str(os.environ.get("CHANNEL_CHAT_ID", "")).strip()
 WORK_ROOT = Path(os.environ.get("WORK_ROOT", "/var/tmp/dl_over_bale_receiver")).resolve()
@@ -65,8 +65,6 @@ def ensure_prerequisites() -> None:
         raise RuntimeError("7z is required in the container. Install p7zip-full.")
     if not CHANNEL_CHAT_ID:
         raise RuntimeError("CHANNEL_CHAT_ID is required.")
-    if not DOWNLOAD_LINK_SECRET:
-        raise RuntimeError("DOWNLOAD_LINK_SECRET is required for protected disk download links.")
     if not URL_RESPONSE_PASSWORD:
         raise RuntimeError("URL_RESPONSE_PASSWORD is required.")
     WORK_ROOT.mkdir(parents=True, exist_ok=True)
@@ -225,6 +223,8 @@ def build_secure_link_token(uri: str, expires: int) -> str:
 
 def public_disk_uri(relative_path: Path) -> str:
     uri = f"/files/{quote(relative_path.as_posix(), safe='/')}"
+    if not DOWNLOAD_LINK_SECRET:
+        return uri
     expires = int(time.time()) + DOWNLOAD_LINK_TTL_SECONDS
     token = build_secure_link_token(uri, expires)
     return f"{uri}?md5={token}&expires={expires}"
@@ -262,7 +262,7 @@ def encrypt_response_value(value: str) -> str:
 def encrypt_transport_payload(payload: dict[str, Any]) -> str:
     salt = os.urandom(12)
     nonce = os.urandom(12)
-    key_material = hashlib.pbkdf2_hmac("sha256", ARCHIVE_PASSWORD.encode("utf-8"), salt, 120_000, dklen=64)
+    key_material = hashlib.pbkdf2_hmac("sha256", URL_RESPONSE_PASSWORD.encode("utf-8"), salt, 120_000, dklen=64)
     enc_key = key_material[:32]
     mac_key = key_material[32:]
     plaintext = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
@@ -284,18 +284,23 @@ def decrypt_transport_payload(token: str) -> dict[str, Any] | None:
     nonce = blob[12:24]
     mac = blob[24:56]
     ciphertext = blob[56:]
-    key_material = hashlib.pbkdf2_hmac("sha256", ARCHIVE_PASSWORD.encode("utf-8"), salt, 120_000, dklen=64)
-    enc_key = key_material[:32]
-    mac_key = key_material[32:]
-    expected_mac = hmac.new(mac_key, b"dl-over-bale-meta-v1" + salt + nonce + ciphertext, hashlib.sha256).digest()
-    if not hmac.compare_digest(mac, expected_mac):
-        return None
-    try:
-        plaintext = xor_keystream(ciphertext, enc_key, nonce).decode("utf-8")
-        payload = json.loads(plaintext)
-    except Exception:
-        return None
-    return payload if isinstance(payload, dict) else None
+    keys = [URL_RESPONSE_PASSWORD]
+    if ARCHIVE_PASSWORD and ARCHIVE_PASSWORD != URL_RESPONSE_PASSWORD:
+        keys.append(ARCHIVE_PASSWORD)
+    for key in keys:
+        key_material = hashlib.pbkdf2_hmac("sha256", key.encode("utf-8"), salt, 120_000, dklen=64)
+        enc_key = key_material[:32]
+        mac_key = key_material[32:]
+        expected_mac = hmac.new(mac_key, b"dl-over-bale-meta-v1" + salt + nonce + ciphertext, hashlib.sha256).digest()
+        if not hmac.compare_digest(mac, expected_mac):
+            continue
+        try:
+            plaintext = xor_keystream(ciphertext, enc_key, nonce).decode("utf-8")
+            payload = json.loads(plaintext)
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+    return None
 
 
 def cleanup_public_downloads() -> None:
@@ -355,10 +360,11 @@ def extract_archive(job_dir: Path, job: dict[str, Any]) -> tuple[dict[str, Any],
         "7z",
         "x",
         "-y",
-        f"-p{ARCHIVE_PASSWORD}",
         str(archive_part),
         f"-o{extract_dir}",
     ]
+    if ARCHIVE_PASSWORD:
+        cmd.insert(3, f"-p{ARCHIVE_PASSWORD}")
     completed = subprocess.run(cmd, text=True, capture_output=True, check=False)
     if completed.returncode != 0:
         raise RuntimeError(f"7z extract failed: {completed.stderr.strip() or completed.stdout.strip()}")
@@ -394,10 +400,11 @@ def extract_chunk_archive(archive_path: Path, extract_dir: Path) -> tuple[dict[s
         "7z",
         "x",
         "-y",
-        f"-p{ARCHIVE_PASSWORD}",
         str(archive_path),
         f"-o{extract_dir}",
     ]
+    if ARCHIVE_PASSWORD:
+        cmd.insert(3, f"-p{ARCHIVE_PASSWORD}")
     completed = subprocess.run(cmd, text=True, capture_output=True, check=False)
     if completed.returncode != 0:
         raise RuntimeError(f"7z extract failed: {completed.stderr.strip() or completed.stdout.strip()}")
