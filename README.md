@@ -14,6 +14,11 @@ You need:
   - one sender bot
   - one receiver bot
 
+Recommended host layout:
+
+- Run `sender` outside Iran so it can reach international download sources more reliably.
+- Run `receiver` inside Iran so users get the final download link from an Iran-based server.
+
 For both bots:
 
 1. Create them with `@botfather`.
