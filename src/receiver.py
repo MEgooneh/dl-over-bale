@@ -5,12 +5,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import hmac
 import json
-import logging
 import os
 import queue
-import re
 import shutil
 import subprocess
 import threading
@@ -21,9 +18,9 @@ from urllib.parse import quote
 
 import httpx
 
-LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("dl-over-bale-receiver")
+import common
+
+log = common.configure_logging("dl-over-bale-receiver")
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 ARCHIVE_PASSWORD = os.environ.get("ARCHIVE_PASSWORD", "").strip()
@@ -46,12 +43,7 @@ WORKER_COUNT = max(1, int(os.environ.get("WORKER_COUNT", "8")))
 MAX_QUEUE_SIZE = max(1, int(os.environ.get("MAX_QUEUE_SIZE", "1000")))
 POLL_TIMEOUT = int(os.environ.get("POLL_TIMEOUT", "30"))
 
-BALE_API = f"https://tapi.bale.ai/bot{BOT_TOKEN}"
-PART_CAPTION_RE = re.compile(r"^~([A-Za-z0-9_-]+)$")
-CONTROL_DONE_PREFIX = "BALE_DONE "
-CONTROL_FAIL_PREFIX = "BALE_FAIL "
-CONTROL_UPLOAD_DONE_PREFIX = "BALE_UPLOAD_DONE "
-CONTROL_RETRY_PREFIX = "BALE_RETRY "
+BALE_API = common.bale_api_url(BOT_TOKEN)
 
 state_lock = threading.Lock()
 job_queue: queue.Queue[str] = queue.Queue(maxsize=MAX_QUEUE_SIZE)
@@ -61,10 +53,7 @@ download_cleanup_started = False
 
 
 def sanitize_error_text(value: object) -> str:
-    text = str(value).strip()
-    if BOT_TOKEN:
-        text = text.replace(BOT_TOKEN, "<bot-token>")
-    return text
+    return common.sanitize_error_text(value, BOT_TOKEN)
 
 
 def ensure_prerequisites() -> None:
@@ -91,13 +80,7 @@ def save_state(state: dict[str, Any]) -> None:
 
 
 def api_get(client: httpx.Client, method: str, *, params: dict[str, Any]) -> dict[str, Any]:
-    response = client.get(f"{BALE_API}/{method}", params=params, timeout=POLL_TIMEOUT + 5)
-    response.raise_for_status()
-    payload = response.json()
-    if not payload.get("ok", False):
-        description = payload.get("description") or payload.get("error") or "unknown Bale API error"
-        raise RuntimeError(f"Bale API {method} failed: {description}")
-    return payload
+    return common.api_get(client, BALE_API, method, params=params, timeout=POLL_TIMEOUT + 5)
 
 
 def api_post(
@@ -107,81 +90,40 @@ def api_post(
     timeout: float = REQUEST_TIMEOUT,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    response = client.post(f"{BALE_API}/{method}", timeout=timeout, **kwargs)
-    response.raise_for_status()
-    payload = response.json()
-    if not payload.get("ok", False):
-        description = payload.get("description") or payload.get("error") or "unknown Bale API error"
-        raise RuntimeError(f"Bale API {method} failed: {description}")
-    return payload
+    return common.api_post(client, BALE_API, method, timeout=timeout, **kwargs)
 
 
 def send_channel_control(client: httpx.Client, prefix: str, payload: dict[str, Any]) -> None:
-    text = prefix + encrypt_transport_payload(payload)
-    api_post(client, "sendMessage", json={"chat_id": CHANNEL_CHAT_ID, "text": text})
+    common.send_channel_control(
+        client,
+        BALE_API,
+        CHANNEL_CHAT_ID,
+        prefix,
+        payload,
+        URL_RESPONSE_PASSWORD,
+        timeout=REQUEST_TIMEOUT,
+    )
 
 
 def parse_control_message(text: str) -> tuple[str, dict[str, Any]] | None:
-    stripped = text.strip()
-    for prefix, kind in ((CONTROL_UPLOAD_DONE_PREFIX, "upload_done"),):
-        if not stripped.startswith(prefix):
-            continue
-        payload = decrypt_transport_payload(stripped[len(prefix) :].strip())
-        if payload is not None:
-            return kind, payload
-    return None
+    return common.parse_control_message(
+        text,
+        ((common.CONTROL_UPLOAD_DONE_PREFIX, "upload_done"),),
+        URL_RESPONSE_PASSWORD,
+        ARCHIVE_PASSWORD,
+    )
 
 
 def extract_part_info(message: dict[str, Any]) -> dict[str, Any] | None:
-    caption = str(message.get("caption") or "").strip()
-    match = PART_CAPTION_RE.match(caption)
-    if not match:
-        return None
-    payload = decrypt_transport_payload(match.group(1))
-    if not isinstance(payload, dict):
-        return None
-    request_id = str(payload.get("r") or "").strip()
-    volume_name = str(payload.get("v") or "").strip()
-    try:
-        part_index = int(payload.get("p") or 0)
-        total_parts = int(payload.get("t") or 0)
-    except (TypeError, ValueError):
-        return None
-    mode = str(payload.get("m") or "legacy").strip() or "legacy"
-    if not request_id or part_index <= 0 or not volume_name:
-        return None
-    return {
-        "request_id": request_id,
-        "part": part_index,
-        "total": total_parts,
-        "volume": volume_name,
-        "mode": mode,
-    }
-
-
-def chat_matches_config(chat: dict[str, Any], configured_chat: str) -> bool:
-    configured = str(configured_chat or "").strip()
-    if not configured:
-        return False
-    chat_id = str(chat.get("id") or "").strip()
-    if chat_id and chat_id == configured:
-        return True
-    configured_username = configured.lstrip("@").lower()
-    chat_username = str(chat.get("username") or "").strip().lstrip("@").lower()
-    return bool(configured_username and chat_username and configured_username == chat_username)
+    return common.extract_part_info(message, URL_RESPONSE_PASSWORD, ARCHIVE_PASSWORD)
 
 
 def same_channel(message: dict[str, Any]) -> bool:
-    return chat_matches_config(message.get("chat") or {}, CHANNEL_CHAT_ID)
+    return common.chat_matches_config(message.get("chat") or {}, CHANNEL_CHAT_ID)
 
 
 def get_file_url(file_result: dict[str, Any]) -> str:
-    file_path = file_result.get("file_path") or file_result.get("url") or file_result.get("download_url") or ""
-    if not file_path:
-        raise RuntimeError(f"getFile did not return a file_path-like value: {file_result}")
-    if str(file_path).startswith(("http://", "https://")):
-        return str(file_path)
-    return f"https://tapi.bale.ai/file/bot{BOT_TOKEN}/{str(file_path).lstrip('/')}"
+    return common.get_file_url(file_result, BOT_TOKEN)
 
 
 def download_document(client: httpx.Client, document: dict[str, Any], destination: Path) -> None:
@@ -240,74 +182,6 @@ def public_disk_uri(relative_path: Path) -> str:
 def public_disk_url(relative_path: Path) -> str:
     uri = public_disk_uri(relative_path)
     return f"{PUBLIC_DOWNLOAD_BASE_URL}{uri}"
-
-
-def xor_keystream(data: bytes, key: bytes, nonce: bytes) -> bytes:
-    output = bytearray()
-    counter = 0
-    while len(output) < len(data):
-        block = hashlib.sha256(key + nonce + counter.to_bytes(8, "big")).digest()
-        remaining = len(data) - len(output)
-        output.extend(block[:remaining])
-        counter += 1
-    return bytes(left ^ right for left, right in zip(data, output))
-
-
-def encrypt_response_value(value: str) -> str:
-    salt = os.urandom(16)
-    nonce = os.urandom(16)
-    key_material = hashlib.pbkdf2_hmac("sha256", URL_RESPONSE_PASSWORD.encode("utf-8"), salt, 200_000, dklen=64)
-    enc_key = key_material[:32]
-    mac_key = key_material[32:]
-    plaintext = value.encode("utf-8")
-    ciphertext = xor_keystream(plaintext, enc_key, nonce)
-    mac = hmac.new(mac_key, b"dl-over-bale-url-v1" + salt + nonce + ciphertext, hashlib.sha256).digest()
-    token = base64.urlsafe_b64encode(salt + nonce + mac + ciphertext).decode("ascii").rstrip("=")
-    return f"enc-v1.{token}"
-
-
-def encrypt_transport_payload(payload: dict[str, Any]) -> str:
-    salt = os.urandom(12)
-    nonce = os.urandom(12)
-    key_material = hashlib.pbkdf2_hmac("sha256", URL_RESPONSE_PASSWORD.encode("utf-8"), salt, 120_000, dklen=64)
-    enc_key = key_material[:32]
-    mac_key = key_material[32:]
-    plaintext = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
-    ciphertext = xor_keystream(plaintext, enc_key, nonce)
-    mac = hmac.new(mac_key, b"dl-over-bale-meta-v1" + salt + nonce + ciphertext, hashlib.sha256).digest()
-    return base64.urlsafe_b64encode(salt + nonce + mac + ciphertext).decode("ascii").rstrip("=")
-
-
-def decrypt_transport_payload(token: str) -> dict[str, Any] | None:
-    try:
-        raw = token.encode("ascii")
-        raw += b"=" * (-len(raw) % 4)
-        blob = base64.urlsafe_b64decode(raw)
-    except Exception:
-        return None
-    if len(blob) < 56:
-        return None
-    salt = blob[:12]
-    nonce = blob[12:24]
-    mac = blob[24:56]
-    ciphertext = blob[56:]
-    keys = [URL_RESPONSE_PASSWORD]
-    if ARCHIVE_PASSWORD and ARCHIVE_PASSWORD != URL_RESPONSE_PASSWORD:
-        keys.append(ARCHIVE_PASSWORD)
-    for key in keys:
-        key_material = hashlib.pbkdf2_hmac("sha256", key.encode("utf-8"), salt, 120_000, dklen=64)
-        enc_key = key_material[:32]
-        mac_key = key_material[32:]
-        expected_mac = hmac.new(mac_key, b"dl-over-bale-meta-v1" + salt + nonce + ciphertext, hashlib.sha256).digest()
-        if not hmac.compare_digest(mac, expected_mac):
-            continue
-        try:
-            plaintext = xor_keystream(ciphertext, enc_key, nonce).decode("utf-8")
-            payload = json.loads(plaintext)
-        except Exception:
-            return None
-        return payload if isinstance(payload, dict) else None
-    return None
 
 
 def cleanup_public_downloads() -> None:
@@ -630,7 +504,7 @@ def process_completed_job(request_id: str, state: dict[str, Any]) -> None:
         with httpx.Client() as client:
             send_channel_control(
                 client,
-                CONTROL_DONE_PREFIX,
+                common.CONTROL_DONE_PREFIX,
                 {
                     "request_id": request_id,
                     "backend": backend,
@@ -655,7 +529,7 @@ def process_completed_job(request_id: str, state: dict[str, Any]) -> None:
         error_text = sanitize_error_text(exc) or exc.__class__.__name__
         log.exception("Failed processing request %s", request_id)
         with httpx.Client() as client:
-            send_channel_control(client, CONTROL_FAIL_PREFIX, {"request_id": request_id, "error": error_text})
+            send_channel_control(client, common.CONTROL_FAIL_PREFIX, {"request_id": request_id, "error": error_text})
         with state_lock:
             state.setdefault("failed_jobs", {})[request_id] = {
                 "failed_at": int(time.time()),
@@ -755,10 +629,12 @@ def request_missing_parts(client: httpx.Client, request_id: str, state: dict[str
             save_state(state)
             should_fail = False
     if should_fail:
-        send_channel_control(client, CONTROL_FAIL_PREFIX, {"request_id": request_id, "error": error_text})
+        send_channel_control(client, common.CONTROL_FAIL_PREFIX, {"request_id": request_id, "error": error_text})
         return
     log.warning("Requesting recovery for %s missing parts %s", request_id, missing)
-    send_channel_control(client, CONTROL_RETRY_PREFIX, {"request_id": request_id, "missing": missing, "attempt": attempts + 1})
+    send_channel_control(
+        client, common.CONTROL_RETRY_PREFIX, {"request_id": request_id, "missing": missing, "attempt": attempts + 1}
+    )
 
 
 def handle_upload_done_payload(payload: dict[str, Any], state: dict[str, Any]) -> None:

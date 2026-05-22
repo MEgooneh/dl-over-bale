@@ -55,6 +55,7 @@ indent-style = "space"
 
 [tool.hatch.build.targets.wheel]
 only-include = [
+  "src/common.py",
   "src/receiver.py",
   "src/sender.py",
 ]

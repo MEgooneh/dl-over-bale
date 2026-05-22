@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import hmac
 import json
-import logging
 import math
 import os
 import queue
@@ -26,17 +24,9 @@ from urllib.parse import unquote, urljoin, urlparse
 import httpx
 import yt_dlp
 
-LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("dl-over-bale-sender")
+import common
 
-
-def first_configured_id(raw: str) -> str:
-    for item in raw.split(","):
-        value = item.strip()
-        if value:
-            return value
-    return ""
+log = common.configure_logging("dl-over-bale-sender")
 
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -81,7 +71,7 @@ STATS_ADMIN_USERNAMES = {
 STATS_ADMIN_USER_IDS = {
     user_id.strip() for user_id in os.environ.get("STATS_ADMIN_USER_IDS", "").split(",") if user_id.strip()
 }
-ADMIN_CHAT_ID = first_configured_id(os.environ.get("STATS_ADMIN_USER_IDS", ""))
+ADMIN_CHAT_ID = common.first_configured_id(os.environ.get("STATS_ADMIN_USER_IDS", ""))
 USER_AGENT = os.environ.get(
     "USER_AGENT",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -104,14 +94,9 @@ YTDLP_FORMAT_CANDIDATES = (
     "best",
 )
 
-BALE_API = f"https://tapi.bale.ai/bot{BOT_TOKEN}"
+BALE_API = common.bale_api_url(BOT_TOKEN)
 URL_RE = re.compile(r"https?://[^\s<>()\[\]{}\"']+", re.IGNORECASE)
 TRAILING_URL_PUNCTUATION = ".,!?;:)]}'\""
-CONTROL_DONE_PREFIX = "BALE_DONE "
-CONTROL_FAIL_PREFIX = "BALE_FAIL "
-CONTROL_UPLOAD_DONE_PREFIX = "BALE_UPLOAD_DONE "
-CONTROL_RETRY_PREFIX = "BALE_RETRY "
-PART_CAPTION_PREFIX = "~"
 STEP_DOWNLOAD_TEXT = "Step [1/3]..."
 STEP_UPLOAD_TEXT = "Step [2/3]..."
 STEP_TRANSFER_TEXT = "Step [3/3]..."
@@ -159,10 +144,7 @@ chunk_message_cleanup_started = False
 
 
 def sanitize_error_text(value: object) -> str:
-    text = str(value).strip()
-    if BOT_TOKEN:
-        text = text.replace(BOT_TOKEN, "<bot-token>")
-    return text
+    return common.sanitize_error_text(value, BOT_TOKEN)
 
 
 @dataclass
@@ -192,7 +174,7 @@ def ensure_prerequisites() -> None:
     if shutil.which("7z") is None:
         raise RuntimeError("7z is required in the container. Install p7zip-full.")
     if ARCHIVE_PASSWORD:
-        validate_password_strength(ARCHIVE_PASSWORD)
+        common.validate_password_strength(ARCHIVE_PASSWORD)
     if not CHANNEL_TARGET_CHAT_ID:
         raise RuntimeError("CHANNEL_CHAT_ID or CHANNEL_TARGET_CHAT_ID is required.")
     if not CHANNEL_UPDATES_CHAT_ID:
@@ -203,19 +185,6 @@ def ensure_prerequisites() -> None:
         raise RuntimeError("URL_RESPONSE_PASSWORD is required.")
     WORK_ROOT.mkdir(parents=True, exist_ok=True)
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-
-def validate_password_strength(password: str) -> None:
-    checks = [
-        (len(password) >= 24, "at least 24 characters"),
-        (re.search(r"[A-Z]", password) is not None, "an uppercase letter"),
-        (re.search(r"[a-z]", password) is not None, "a lowercase letter"),
-        (re.search(r"\d", password) is not None, "a digit"),
-        (re.search(r"[^A-Za-z0-9]", password) is not None, "a symbol"),
-    ]
-    missing = [label for ok, label in checks if not ok]
-    if missing:
-        raise RuntimeError(f"ARCHIVE_PASSWORD is too weak; missing {', '.join(missing)}.")
 
 
 def init_db() -> None:
@@ -1433,13 +1402,7 @@ def api_call(
     timeout: float = REQUEST_TIMEOUT,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    response = client.post(f"{BALE_API}/{method}", timeout=timeout, **kwargs)
-    response.raise_for_status()
-    payload = response.json()
-    if not payload.get("ok", False):
-        description = payload.get("description") or payload.get("error") or "unknown Bale API error"
-        raise RuntimeError(f"Bale API {method} failed: {description}")
-    return payload
+    return common.api_post(client, BALE_API, method, timeout=timeout, **kwargs)
 
 
 def send_message(
@@ -1526,77 +1489,23 @@ def chunk_archive_name(request_id: str, chunk_index: int) -> str:
     return f"{token}.bin"
 
 
-def xor_keystream(data: bytes, key: bytes, nonce: bytes) -> bytes:
-    output = bytearray()
-    counter = 0
-    while len(output) < len(data):
-        block = hashlib.sha256(key + nonce + counter.to_bytes(8, "big")).digest()
-        remaining = len(data) - len(output)
-        output.extend(block[:remaining])
-        counter += 1
-    return bytes(left ^ right for left, right in zip(data, output))
-
-
 def encrypt_user_url(value: str) -> str:
-    salt = secrets.token_bytes(16)
-    nonce = secrets.token_bytes(16)
-    key_material = hashlib.pbkdf2_hmac("sha256", URL_RESPONSE_PASSWORD.encode("utf-8"), salt, 200_000, dklen=64)
-    enc_key = key_material[:32]
-    mac_key = key_material[32:]
-    plaintext = value.encode("utf-8")
-    ciphertext = xor_keystream(plaintext, enc_key, nonce)
-    mac = hmac.new(mac_key, b"dl-over-bale-url-v1" + salt + nonce + ciphertext, hashlib.sha256).digest()
-    token = base64.urlsafe_b64encode(salt + nonce + mac + ciphertext).decode("ascii").rstrip("=")
-    return f"enc-v1.{token}"
+    return common.encrypt_response_value(value, URL_RESPONSE_PASSWORD)
 
 
 def encrypt_transport_payload(payload: dict[str, Any]) -> str:
-    salt = secrets.token_bytes(12)
-    nonce = secrets.token_bytes(12)
-    key_material = hashlib.pbkdf2_hmac("sha256", URL_RESPONSE_PASSWORD.encode("utf-8"), salt, 120_000, dklen=64)
-    enc_key = key_material[:32]
-    mac_key = key_material[32:]
-    plaintext = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
-    ciphertext = xor_keystream(plaintext, enc_key, nonce)
-    mac = hmac.new(mac_key, b"dl-over-bale-meta-v1" + salt + nonce + ciphertext, hashlib.sha256).digest()
-    return base64.urlsafe_b64encode(salt + nonce + mac + ciphertext).decode("ascii").rstrip("=")
-
-
-def decrypt_transport_payload(token: str) -> dict[str, Any] | None:
-    try:
-        raw = token.encode("ascii")
-        raw += b"=" * (-len(raw) % 4)
-        blob = base64.urlsafe_b64decode(raw)
-    except Exception:
-        return None
-    if len(blob) < 56:
-        return None
-    salt = blob[:12]
-    nonce = blob[12:24]
-    mac = blob[24:56]
-    ciphertext = blob[56:]
-    keys = [URL_RESPONSE_PASSWORD]
-    if ARCHIVE_PASSWORD and ARCHIVE_PASSWORD != URL_RESPONSE_PASSWORD:
-        keys.append(ARCHIVE_PASSWORD)
-    for key in keys:
-        key_material = hashlib.pbkdf2_hmac("sha256", key.encode("utf-8"), salt, 120_000, dklen=64)
-        enc_key = key_material[:32]
-        mac_key = key_material[32:]
-        expected_mac = hmac.new(mac_key, b"dl-over-bale-meta-v1" + salt + nonce + ciphertext, hashlib.sha256).digest()
-        if not hmac.compare_digest(mac, expected_mac):
-            continue
-        try:
-            plaintext = xor_keystream(ciphertext, enc_key, nonce).decode("utf-8")
-            payload = json.loads(plaintext)
-        except Exception:
-            return None
-        return payload if isinstance(payload, dict) else None
-    return None
+    return common.encrypt_transport_payload(payload, URL_RESPONSE_PASSWORD)
 
 
 def build_part_caption(request_id: str, part_index: int, part_total: int, volume_name: str, *, mode: str) -> str:
-    payload = {"r": request_id, "p": part_index, "t": part_total, "v": volume_name, "m": mode}
-    return PART_CAPTION_PREFIX + encrypt_transport_payload(payload)
+    return common.build_part_caption(
+        request_id,
+        part_index,
+        part_total,
+        volume_name,
+        mode=mode,
+        password=URL_RESPONSE_PASSWORD,
+    )
 
 
 def create_chunk_archive(stage_dir: Path, manifest: ChunkManifest, entry: dict[str, Any], raw_chunk_path: Path) -> Path:
@@ -1868,7 +1777,7 @@ def notify_upload_complete(client: httpx.Client, manifest: ChunkManifest) -> Non
     send_control_message(
         client,
         CHANNEL_TARGET_CHAT_ID,
-        CONTROL_UPLOAD_DONE_PREFIX,
+        common.CONTROL_UPLOAD_DONE_PREFIX,
         {
             "request_id": manifest.request_id,
             "total": manifest.total_chunks,
@@ -2243,30 +2152,16 @@ def enqueue_request(request_id: str) -> None:
 
 
 def parse_control_message(text: str) -> tuple[str, dict[str, Any]] | None:
-    stripped = text.strip()
-    for prefix, kind in (
-        (CONTROL_DONE_PREFIX, "done"),
-        (CONTROL_FAIL_PREFIX, "fail"),
-        (CONTROL_RETRY_PREFIX, "retry"),
-    ):
-        if not stripped.startswith(prefix):
-            continue
-        payload = decrypt_transport_payload(stripped[len(prefix) :].strip())
-        if payload is not None:
-            return kind, payload
-    return None
-
-
-def chat_matches_config(chat: dict[str, Any], configured_chat: str) -> bool:
-    configured = str(configured_chat or "").strip()
-    if not configured:
-        return False
-    chat_id = str(chat.get("id") or "").strip()
-    if chat_id and chat_id == configured:
-        return True
-    configured_username = configured.lstrip("@").lower()
-    chat_username = str(chat.get("username") or "").strip().lstrip("@").lower()
-    return bool(configured_username and chat_username and configured_username == chat_username)
+    return common.parse_control_message(
+        text,
+        (
+            (common.CONTROL_DONE_PREFIX, "done"),
+            (common.CONTROL_FAIL_PREFIX, "fail"),
+            (common.CONTROL_RETRY_PREFIX, "retry"),
+        ),
+        URL_RESPONSE_PASSWORD,
+        ARCHIVE_PASSWORD,
+    )
 
 
 def handle_channel_control(client: httpx.Client, kind: str, payload: dict[str, Any]) -> None:
@@ -2435,9 +2330,9 @@ def poll_forever() -> None:
                 params: dict[str, Any] = {"timeout": POLL_TIMEOUT, "allowed_updates": '["message","channel_post"]'}
                 if offset is not None:
                     params["offset"] = offset
-                response = client.get(f"{BALE_API}/getUpdates", params=params, timeout=POLL_TIMEOUT + 5)
-                response.raise_for_status()
-                updates = response.json().get("result", [])
+                updates = common.api_get(client, BALE_API, "getUpdates", params=params, timeout=POLL_TIMEOUT + 5).get(
+                    "result", []
+                )
                 for update in updates:
                     next_offset = int(update["update_id"]) + 1
                     message = update.get("message") or update.get("channel_post")
@@ -2451,7 +2346,7 @@ def poll_forever() -> None:
                         offset = next_offset
                         save_offset(offset)
                         handle_private_message(client, message)
-                    elif chat_matches_config(chat, CHANNEL_UPDATES_CHAT_ID):
+                    elif common.chat_matches_config(chat, CHANNEL_UPDATES_CHAT_ID):
                         offset = next_offset
                         save_offset(offset)
                         handle_channel_message(client, message)
