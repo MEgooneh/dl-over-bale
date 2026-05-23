@@ -111,6 +111,8 @@ Optional network and proxy settings:
 - `YTDLP_COOKIE_TEXT_B64`: base64-encoded cookie file content.
 - `YTDLP_COOKIES_FROM_BROWSER`: browser cookie import setting for `yt-dlp`.
 - `YTDLP_EXTRA_OPTS_JSON`: extra `yt-dlp` options as JSON.
+- `QUALITY_SELECTION_WAIT_SECONDS`: seconds the sender waits for a video quality reply before starting the default quality.
+- `QUALITY_SELECTION_CHECK_INTERVAL_SECONDS`: how often the sender checks for expired video quality prompts.
 
 For cookie setup details, see yt-dlp's ["How do I pass cookies to yt-dlp?"](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp) documentation.
 

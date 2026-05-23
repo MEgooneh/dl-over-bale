@@ -103,6 +103,11 @@ STEP_TRANSFER_TEXT = "Step [3/3]..."
 DEFAULT_VIDEO_HEIGHT = 480
 QUALITY_SELECTION_RE = re.compile(r"(?<!\d)(360|480|720|1080|1440|2160)\s*p?\b", re.IGNORECASE)
 QUALITY_OVERRIDE_LOOKBACK_SECONDS = max(60, int(os.environ.get("QUALITY_OVERRIDE_LOOKBACK_SECONDS", "900")))
+QUALITY_SELECTION_WAIT_SECONDS = max(0, int(os.environ.get("QUALITY_SELECTION_WAIT_SECONDS", "45")))
+QUALITY_SELECTION_CHECK_INTERVAL_SECONDS = max(
+    1,
+    int(os.environ.get("QUALITY_SELECTION_CHECK_INTERVAL_SECONDS", "5")),
+)
 
 DIRECT_PAGE_CONTENT_TYPES = {"application/xhtml+xml", "text/html"}
 DIRECT_PAGE_EXTENSIONS = {
@@ -141,6 +146,7 @@ recovery_lock = threading.Lock()
 recovering_requests: set[str] = set()
 completion_watchdog_started = False
 chunk_message_cleanup_started = False
+quality_selection_watchdog_started = False
 
 
 def sanitize_error_text(value: object) -> str:
@@ -308,6 +314,7 @@ def create_request_record(
     user_id: str,
     request_kind: str = "",
     requested_video_height: int = 0,
+    status: str = "queued",
 ) -> None:
     now = int(time.time())
     with db_conn() as conn:
@@ -326,7 +333,7 @@ def create_request_record(
                 int(progress_message_id) if progress_message_id is not None else None,
                 int(prompt_message_id) if prompt_message_id is not None else None,
                 source_url,
-                "queued",
+                status,
                 username,
                 user_id,
                 request_kind,
@@ -346,7 +353,7 @@ def create_request_record(
                 user_id,
                 username,
                 source_url,
-                "queued",
+                status,
                 now,
             ),
         )
@@ -842,6 +849,22 @@ def set_request_prompt_message_id(request_id: str, message_id: int | None) -> No
         conn.commit()
 
 
+def promote_prompt_to_progress_message(request_id: str) -> None:
+    with db_conn() as conn:
+        conn.execute(
+            """
+            UPDATE requests
+            SET progress_message_id = COALESCE(progress_message_id, prompt_message_id),
+                prompt_message_id = NULL,
+                updated_at = ?
+            WHERE request_id = ?
+              AND prompt_message_id IS NOT NULL
+            """,
+            (int(time.time()), request_id),
+        )
+        conn.commit()
+
+
 def set_request_video_quality(request_id: str, requested_video_height: int) -> None:
     with db_conn() as conn:
         conn.execute(
@@ -855,6 +878,25 @@ def set_request_video_quality(request_id: str, requested_video_height: int) -> N
         conn.commit()
 
 
+def mark_video_request_ready(request_id: str) -> bool:
+    with db_conn() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE requests
+            SET status = 'queued',
+                updated_at = ?
+            WHERE request_id = ?
+              AND status = 'awaiting_quality'
+            """,
+            (int(time.time()), request_id),
+        )
+        changed = cursor.rowcount > 0
+        conn.commit()
+    if changed:
+        update_request_event(request_id, status="queued")
+    return changed
+
+
 def find_latest_adjustable_video_request(chat_id: int | str, user_id: str) -> dict[str, Any] | None:
     cutoff = int(time.time()) - QUALITY_OVERRIDE_LOOKBACK_SECONDS
     with db_conn() as conn:
@@ -864,7 +906,7 @@ def find_latest_adjustable_video_request(chat_id: int | str, user_id: str) -> di
             FROM requests
             WHERE chat_id = ?
               AND user_id = ?
-              AND status = 'queued'
+              AND status = 'awaiting_quality'
               AND request_kind = 'video'
               AND prompt_message_id IS NOT NULL
               AND created_at >= ?
@@ -887,6 +929,24 @@ def list_requeueable_request_ids() -> list[str]:
             WHERE status IN ('queued', 'processing')
             ORDER BY created_at ASC
             """
+        ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def list_expired_quality_prompt_request_ids(limit: int = 100) -> list[str]:
+    cutoff = int(time.time()) - QUALITY_SELECTION_WAIT_SECONDS
+    with db_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT request_id
+            FROM requests
+            WHERE status = 'awaiting_quality'
+              AND request_kind = 'video'
+              AND created_at <= ?
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            (cutoff, int(limit)),
         ).fetchall()
     return [str(row[0]) for row in rows]
 
@@ -1306,7 +1366,9 @@ def format_video_prompt(probe: VideoProbe) -> str:
         lines.append(f"Quality: {quality_label}")
     if probe.estimated_size_bytes > 0:
         lines.append(f"Estimated size: ~{human_size(probe.estimated_size_bytes)}")
-    lines.append("Reply with 720p or 1080p before start if you need higher.")
+    lines.append("Reply with 360p, 480p, 720p, 1080p, 1440p, or 2160p.")
+    if QUALITY_SELECTION_WAIT_SECONDS > 0:
+        lines.append(f"Default starts in {QUALITY_SELECTION_WAIT_SECONDS}s.")
     return "\n".join(lines)
 
 
@@ -2059,7 +2121,7 @@ def process_request(request_id: str) -> None:
         upload_completed = False
         try:
             max_download_size = request_download_limit_bytes(str(record.get("username") or ""))
-            delete_request_prompt(client, request_id)
+            promote_prompt_to_progress_message(request_id)
             update_progress(client, request_id, STEP_DOWNLOAD_TEXT)
             requested_video_height = int(record.get("requested_video_height") or 0)
             try:
@@ -2151,6 +2213,56 @@ def enqueue_request(request_id: str) -> None:
     request_queue.put_nowait(request_id)
 
 
+def enqueue_ready_video_request(client: httpx.Client, request_id: str, *, selected_by_user: bool) -> None:
+    if not mark_video_request_ready(request_id):
+        return
+    record = get_request_record(request_id)
+    if record is None:
+        return
+    prompt_message_id = record.get("prompt_message_id")
+    if prompt_message_id is not None:
+        selected_height = int(record.get("requested_video_height") or DEFAULT_VIDEO_HEIGHT)
+        if selected_by_user:
+            text = f"Selected {selected_height}p. Starting download..."
+        else:
+            text = f"No quality reply received. Starting {selected_height}p."
+        try:
+            edit_message_text(client, record["chat_id"], int(prompt_message_id), text)
+        except Exception:
+            log.exception("Failed to update video prompt for %s", request_id)
+    try:
+        enqueue_request(request_id)
+    except queue.Full:
+        delete_request_prompt(client, request_id)
+        update_request_status(request_id, status="failed", error_text="queue is full")
+        update_request_event(request_id, status="failed", error_text="queue is full", finished=True)
+        update_progress(client, request_id, "Failed: bot queue is full. Try again later.")
+
+
+def quality_selection_watchdog() -> None:
+    while True:
+        try:
+            with httpx.Client() as client:
+                for request_id in list_expired_quality_prompt_request_ids():
+                    enqueue_ready_video_request(client, request_id, selected_by_user=False)
+        except Exception:
+            log.exception("Quality selection watchdog failed")
+        time.sleep(QUALITY_SELECTION_CHECK_INTERVAL_SECONDS)
+
+
+def start_quality_selection_watchdog() -> None:
+    global quality_selection_watchdog_started
+    if quality_selection_watchdog_started:
+        return
+    quality_selection_watchdog_started = True
+    thread = threading.Thread(
+        target=quality_selection_watchdog,
+        name="sender-quality-selection-watchdog",
+        daemon=True,
+    )
+    thread.start()
+
+
 def parse_control_message(text: str) -> tuple[str, dict[str, Any]] | None:
     return common.parse_control_message(
         text,
@@ -2234,19 +2346,9 @@ def handle_private_message(client: httpx.Client, message: dict[str, Any]) -> Non
         record = find_latest_adjustable_video_request(chat_id, user_id)
         if record is None:
             return
-        selected_height = max(DEFAULT_VIDEO_HEIGHT, requested_video_height)
+        selected_height = requested_video_height
         set_request_video_quality(record["request_id"], selected_height)
-        prompt_message_id = record.get("prompt_message_id")
-        if prompt_message_id is None:
-            return
-        try:
-            probe = probe_video_metadata(
-                record["source_url"],
-                selected_height=selected_height,
-            )
-            edit_message_text(client, record["chat_id"], int(prompt_message_id), format_video_prompt(probe))
-        except Exception:
-            log.exception("Failed to refresh video prompt for %s", record["request_id"])
+        enqueue_ready_video_request(client, record["request_id"], selected_by_user=True)
         return
     if not url:
         return
@@ -2254,7 +2356,7 @@ def handle_private_message(client: httpx.Client, message: dict[str, Any]) -> Non
     request_id = f"req-{int(time.time())}-{secrets.token_hex(4)}"
     request_kind = ""
     prompt_message_id: int | None = None
-    selected_video_height = max(DEFAULT_VIDEO_HEIGHT, requested_video_height) if requested_video_height else 0
+    selected_video_height = requested_video_height or 0
     if maybe_video_page_url(normalized_url) and not probe_direct_downloadable_url(normalized_url):
         probe_height = selected_video_height or DEFAULT_VIDEO_HEIGHT
         try:
@@ -2285,7 +2387,10 @@ def handle_private_message(client: httpx.Client, message: dict[str, Any]) -> Non
         user_id=user_id,
         request_kind=request_kind,
         requested_video_height=selected_video_height,
+        status="awaiting_quality" if prompt_message_id is not None and requested_video_height is None else "queued",
     )
+    if prompt_message_id is not None and requested_video_height is None:
+        return
     try:
         enqueue_request(request_id)
     except queue.Full:
@@ -2312,6 +2417,7 @@ def poll_forever() -> None:
     start_workers()
     start_completion_watchdog()
     start_chunk_message_cleanup_worker()
+    start_quality_selection_watchdog()
     for request_id in list_requeueable_request_ids():
         try:
             enqueue_request(request_id)
